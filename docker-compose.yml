@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: bluvi_db
+    restart: always
+    environment:
+      POSTGRES_USER: bluvi_user
+      POSTGRES_PASSWORD: bluvi_password
+      POSTGRES_DB: bluvi_database
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
