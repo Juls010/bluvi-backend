@@ -1,45 +1,27 @@
 import express from 'express';
 import cors from 'cors';
-import { Pool } from 'pg';
+import authRoutes from './routes/authRoutes';
+import interestRoutes from './routes/interestRoutes';
 
 const app = express();
-const port = 3000;
-
-const pool = new Pool({
-  user: 'bluvi_user',
-  host: '127.0.0.1',
-  database: 'bluvi_database',
-  password: 'bluvi_password',
-  port: 5432,
-});
 
 app.use(cors({
-  origin: 'http://localhost:5173', // Permite que tu React entre
+  origin: 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
 
 app.use(express.json());
 
+// Agrupamos nuestras rutas
+app.use('/api/auth', authRoutes);
+app.use('/api/interests', interestRoutes); // Ahora será: http://localhost:3000/api/interests
 
-app.get('/intereses', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM interest ORDER BY name ASC');
-    res.json(result.rows); 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al obtener intereses' });
-  }
-});
-
-// Ruta básica de bienvenida
 app.get('/', (req, res) => {
   res.send('Servidor de Bluvi funcionando');
 });
 
-app.listen(port, () => {
-  console.log(`\n\n  Servidor corriendo en http://localhost:${port}`);
-  console.log(`Prueba los datos en: http://localhost:${port}/intereses`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
 });
-
-app.use(cors());

@@ -10,7 +10,7 @@ const pool = new Pool({
 
 const runSeed = async () => {
     try {
-        console.log('🌱 Iniciando carga de datos de prueba...');
+        console.log('Iniciando carga de datos de prueba...');
 
         const interests = [
             "Comida", "Historia", "Anime", "Salud", "Naturaleza", "Feminismo", 
@@ -24,7 +24,7 @@ const runSeed = async () => {
         for (const item of interests) {
         await pool.query('INSERT INTO interest (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [item]);
         }
-        console.log('✅ Intereses insertados');
+        console.log('Intereses insertados');
 
 
         const userResult = await pool.query(`
