@@ -1,9 +1,15 @@
 import { Router } from 'express';
-import { registerStep } from '../controllers/authController';
+import * as authController from '../controllers/authController';
 
 const router = Router();
 
-// Esta ruta será: POST http://localhost:3000/api/auth/register-step
-router.post('/register-step', registerStep);
+// 1. Verificar disponibilidad (se llama desde la vista de Email)
+router.post('/check-email', authController.checkEmail);
+
+// 2. Crear usuario y enviar código (se llama al final del formulario)
+router.post('/register', authController.registerStep);
+
+// 3. Confirmar código y recibir JWT (se llama en la pantalla de verificación)
+router.post('/verify-email', authController.verifyEmail);
 
 export default router;
