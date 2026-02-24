@@ -1,15 +1,13 @@
 import { Router } from 'express';
-import * as authController from '../controllers/authController';
-
+import { registerStep, login, verifyEmail, checkEmail, getProfile } from '../controllers/authController'; 
+import { authenticateToken } from '../middlewares/authMiddleware'; 
 const router = Router();
 
-// 1. Verificar disponibilidad (se llama desde la vista de Email)
-router.post('/check-email', authController.checkEmail);
+router.post('/check-email', checkEmail);
+router.post('/register', registerStep);
+router.post('/login', login);
+router.post('/verify-email', verifyEmail);
 
-// 2. Crear usuario y enviar código (se llama al final del formulario)
-router.post('/register', authController.registerStep);
-
-// 3. Confirmar código y recibir JWT (se llama en la pantalla de verificación)
-router.post('/verify-email', authController.verifyEmail);
+router.get('/profile', authenticateToken, getProfile); 
 
 export default router;
