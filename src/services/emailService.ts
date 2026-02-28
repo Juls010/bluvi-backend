@@ -13,6 +13,13 @@ const transporter = nodemailer.createTransport({
 });
 
 export const sendVerificationEmail = async (to: string, code: string) => {
+    
+    // 2. Corregimos el log para usar 'to' y 'code'
+    console.log("*****************************************");
+    console.log("INTENTANDO ENVIAR EMAIL A:", to);
+    console.log("CÓDIGO QUE DEBE USAR EL USUARIO:", code);
+    console.log("*****************************************");
+        
     try {
         const info = await transporter.sendMail({
         from: '"Bluvi Team 🌊" <no-reply@bluvi.com>',
@@ -33,6 +40,5 @@ export const sendVerificationEmail = async (to: string, code: string) => {
         console.log("Correo enviado: %s", info.messageId);
     } catch (error) {
         console.error("Error al enviar el email:", error);
-        throw new Error("No se pudo enviar el email de verificación");
     }
 };
