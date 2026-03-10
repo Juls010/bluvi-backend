@@ -1,6 +1,7 @@
 import { pool } from '../config/db';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { Response } from 'express';
+import bcrypt from 'bcrypt';
 
 // ─── Query reutilizable ───────────────────────────────────────────────────────
 
@@ -227,5 +228,61 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error("Error en explorar:", error);
         res.status(500).json({ success: false, message: "Error al filtrar usuarios" });
+    }
+};
+
+
+// ─── DELETE /api/users/profile ────────────────────────────────────────────────
+
+export const deleteAccount = async (req: AuthRequest, res: Response) => {
+    const client = await pool.connect();
+    try {
+        const userId = req.user?.userId;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Usuario no identificado" });
+        }
+
+        const { password } = req.body;
+
+        if (!password) {
+            return res.status(400).json({ success: false, message: "La contraseña es obligatoria" });
+        }
+
+        // Verificar que la contraseña es correcta
+        const result = await client.query(
+            'SELECT password FROM users WHERE id_user = $1',
+            [userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+        }
+
+        const isMatch = await bcrypt.compare(password, result.rows[0].password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: "Contraseña incorrecta" });
+        }
+
+        // Borrar en orden para respetar las foreign keys
+        await client.query('BEGIN');
+
+        await client.query('DELETE FROM user_communication_style WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_preference       WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_interest         WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_feature          WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM photo                 WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM users                 WHERE id_user = $1', [userId]);
+
+        await client.query('COMMIT');
+
+        res.status(200).json({ success: true, message: "Cuenta eliminada correctamente" });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error("Error al eliminar cuenta:", error);
+        res.status(500).json({ success: false, message: "Error interno" });
+    } finally {
+        client.release();
     }
 };
