@@ -286,3 +286,60 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
         client.release();
     }
 };
+
+// ─── PATCH /api/users/privacy ─────────────────────────────────────────────────
+
+export const updatePrivacy = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.userId;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Usuario no identificado" });
+        }
+
+        const { is_visible, messages_only_matches } = req.body;
+
+        await pool.query(
+            `UPDATE users
+             SET
+                is_visible             = COALESCE($1, is_visible),
+                messages_only_matches  = COALESCE($2, messages_only_matches)
+             WHERE id_user = $3`,
+            [is_visible ?? null, messages_only_matches ?? null, userId]
+        );
+
+        const result = await pool.query(
+            'SELECT is_visible, messages_only_matches FROM users WHERE id_user = $1',
+            [userId]
+        );
+
+        res.status(200).json({ success: true, privacy: result.rows[0] });
+
+    } catch (error) {
+        console.error("Error al actualizar privacidad:", error);
+        res.status(500).json({ success: false, message: "Error interno" });
+    }
+};
+
+// ─── GET /api/users/privacy ───────────────────────────────────────────────────
+
+export const getPrivacy = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.userId;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Usuario no identificado" });
+        }
+
+        const result = await pool.query(
+            'SELECT is_visible, messages_only_matches FROM users WHERE id_user = $1',
+            [userId]
+        );
+
+        res.status(200).json({ success: true, privacy: result.rows[0] });
+
+    } catch (error) {
+        console.error("Error al obtener privacidad:", error);
+        res.status(500).json({ success: false, message: "Error interno" });
+    }
+};

@@ -71,20 +71,31 @@ export const checkEmail = async (req: Request, res: Response) => {
  * Guarda los datos, cifra la clave y envía el código OTP.
  */
 export const registerStep = async (req: Request, res: Response) => {
-    const client = await pool.connect();
-    
-    try {
-        const { 
-            email, password, firstName, lastName, birthDate, 
-            gender, sexuality, city, description, interests, 
-            neurodivergences, photos 
-        } = req.body;
+        console.log("📥 Datos recibidos en el Back:", req.body);
+        const client = await pool.connect();
+        
+        try {
+            // 1. CAMBIO AQUÍ: Extraemos los nombres exactos que envía el Front
+            const { 
+                email, 
+                password, 
+                first_name,    // Antes era firstName
+                last_name,     // Antes era lastName
+                birth_date,    // Antes era birthDate
+                id_gender,     // Antes era gender
+                id_preference, // Antes era sexuality
+                city, 
+                description, 
+                interests, 
+                neurodivergences, 
+                photos 
+            } = req.body;
 
-        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-        const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+            const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+            const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-        await client.query('BEGIN');
+            await client.query('BEGIN');
 
         // INSERT corregido con los nombres de columna REALES de tu DB
         const userQuery = `
@@ -96,12 +107,21 @@ export const registerStep = async (req: Request, res: Response) => {
             RETURNING id_user
         `;
 
+        // 2. CAMBIO AQUÍ: Usamos las variables correctas en el array
         const userValues = [
-            email, hashedPassword, firstName, lastName, birthDate,
-            gender,     // Ahora es un ID numérico
-            sexuality,  // Ahora es un ID numérico
-            city, description,
-            verificationCode, expiresAt, false, 'user'
+            email, 
+            hashedPassword, 
+            first_name, 
+            last_name, 
+            birth_date,
+            id_gender, 
+            id_preference, 
+            city, 
+            description,
+            verificationCode, 
+            expiresAt, 
+            false, 
+            'user'
         ];
 
         const newUser = await client.query(userQuery, userValues);
