@@ -1,4 +1,4 @@
-import 'dotenv/config'; // Carga el .env lo primero de todo
+import 'dotenv/config'; 
 import app from './app';
 
 const PORT = process.env.PORT || 3000;

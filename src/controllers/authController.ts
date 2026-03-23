@@ -4,13 +4,13 @@ import jwt from 'jsonwebtoken';
 import { pool } from '../config/db';
 import { sendVerificationEmail } from '../services/emailService';
 import { AuthRequest } from '../middlewares/authMiddleware';
+import { generateTokens, verifyRefreshToken } from '../services/jwt';
 
 const SALT_ROUNDS = 10;
 
-
 export const getProfile = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId; 
+        const userId = req.user?.sub; 
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
@@ -75,15 +75,14 @@ export const registerStep = async (req: Request, res: Response) => {
         const client = await pool.connect();
         
         try {
-            // 1. CAMBIO AQUÍ: Extraemos los nombres exactos que envía el Front
             const { 
                 email, 
                 password, 
-                first_name,    // Antes era firstName
-                last_name,     // Antes era lastName
-                birth_date,    // Antes era birthDate
-                id_gender,     // Antes era gender
-                id_preference, // Antes era sexuality
+                first_name,    
+                last_name,    
+                birth_date,    
+                id_gender,     
+                id_preference, 
                 city, 
                 description, 
                 interests, 
@@ -107,7 +106,6 @@ export const registerStep = async (req: Request, res: Response) => {
             RETURNING id_user
         `;
 
-        // 2. CAMBIO AQUÍ: Usamos las variables correctas en el array
         const userValues = [
             email, 
             hashedPassword, 
@@ -184,7 +182,7 @@ export const registerStep = async (req: Request, res: Response) => {
 
     } catch (error: any) {
         await client.query('ROLLBACK');
-        console.error("❌ Error en registro:", error);
+        console.error("Error en registro:", error);
         res.status(500).json({ success: false, message: error.message || "Error en el servidor" });
     } finally {
         client.release();
@@ -194,105 +192,90 @@ export const registerStep = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
-
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         const user = result.rows[0];
 
-        if (!user) {
+        if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(401).json({ success: false, message: "Credenciales incorrectas" });
         }
 
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: "Credenciales incorrectas" });
-        }
-
-        console.log("Generando token para el usuario ID:", user.id_user);
-
-        const token = jwt.sign(
-            { 
-                userId: user.id_user, 
-                role: user.role 
-            }, 
-            process.env.JWT_SECRET as string,
-            { expiresIn: '24h' }
-        );
+        // CAMBIO: Usamos la utilidad centralizada de la guía [cite: 85, 112]
+        const tokens = generateTokens(user);
 
         res.status(200).json({
             success: true,
             message: "Login exitoso",
-            token,
+            ...tokens, // Esto envía { access, refresh } 
             user: { 
                 id: user.id_user, 
                 firstName: user.first_name, 
                 email: user.email 
             }
         });
-
     } catch (error) {
-        console.error("❌ Error en login:", error);
-        res.status(500).json({ success: false, message: "Error interno del servidor" });
+        console.error("Error en login:", error);
+        res.status(500).json({ success: false, message: "Error interno" });
     }
 };
 
-/**
- * 3. VERIFICACIÓN DE EMAIL Y ENTREGA DE JWT
- * Valida el código y activa la cuenta del usuario.
- */
-export const verifyEmail = async (req: Request, res: Response) => {
-    /*
+
+export const refresh = async (req: Request, res: Response) => {
+    const { refresh } = req.body;
+    if (!refresh) return res.status(400).json({ message: 'Refresh token requerido' });
+
     try {
-        const { userId, code } = req.body;
+        // 1. Verificamos el token de refresco con la utilidad jwt.ts
+        const payload = verifyRefreshToken(refresh);
+        
+        // 2. Buscamos al usuario en la BD (con el 'sub' del token)
+        const user = await pool.query('SELECT * FROM users WHERE id_user = $1', [payload.sub]);
+        
+        if (!user.rows[0]) return res.status(401).json({ message: 'Usuario no encontrado' });
+
+        // 3. Generamos un nuevo par de tokens
+        return res.json(generateTokens(user.rows[0]));
+    } catch {
+        return res.status(401).json({ detail: 'Refresh token inválido o expirado' });
+    }
+};
+
+export const verifyEmail = async (req: Request, res: Response) => {
+    try {
+        const { email, code } = req.body; // El front envía el email y el código de 6 dígitos
 
         const result = await pool.query(
-            'SELECT verification_code, code_expires_at FROM users WHERE id_user = $1',
-            [userId]
+            'SELECT * FROM users WHERE email = $1 AND verification_code = $2',
+            [email, code]
         );
 
         const user = result.rows[0];
 
         if (!user) {
-            return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+            return res.status(401).json({ success: false, message: "Código incorrecto" });
         }
 
-        // Validar código y tiempo
-        const isCodeValid = user.verification_code === code;
-        const isNotExpired = new Date() < new Date(user.code_expires_at);
-
-        if (!isCodeValid || !isNotExpired) {
-            return res.status(400).json({ 
-                success: false, 
-                message: !isCodeValid ? "Código incorrecto" : "El código ha expirado" 
-            });
+        // Validar si el código ha expirado
+        if (new Date() > new Date(user.code_expires_at)) {
+            return res.status(400).json({ success: false, message: "El código ha expirado" });
         }
 
-        // Activar cuenta y limpiar campos de verificación
+        // Activar cuenta y limpiar el código como dice la guía 
         await pool.query(
             'UPDATE users SET is_verified = true, verification_code = NULL, code_expires_at = NULL WHERE id_user = $1',
-            [userId]
+            [user.id_user]
         );
 
-        // Generar JWT final
-        const token = jwt.sign(
-            { userId: userId }, 
-            process.env.JWT_SECRET as string, 
-            { expiresIn: '24h' }
-        );
+        // Generar tokens para iniciar sesión automáticamente 
+        const tokens = generateTokens(user);
 
         res.status(200).json({
             success: true,
             message: "Email verificado correctamente",
-            token
+            ...tokens
         });
 
     } catch (error) {
         console.error("Error en verificación:", error);
-        res.status(500).json({ success: false, message: "Error interno en la verificación" });
+        res.status(500).json({ success: false, message: "Error interno" });
     }
-    */
-
-    return res.status(200).json({ 
-        success: true, 
-        message: "Verificación saltada para pruebas" 
-    });
 };

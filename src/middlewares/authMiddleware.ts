@@ -1,33 +1,31 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+// Siguiendo la guía, lo ideal es importar la verificación desde tus utils
+import { verifyAccessToken } from '../services/jwt'; 
 
 export interface AuthRequest extends Request {
-    user?: {
-        userId: number;
-    };
+    user?: any; // El profesor suele guardar el payload completo del token [cite: 140]
 }
 
 export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
+    
+    // La guía valida explícitamente que empiece por Bearer 
+    if (!authHeader?.startsWith('Bearer ')) {
         return res.status(401).json({ 
-            success: false, 
-            message: "Acceso denegado. No se encontró el token de sesión." 
+            detail: 'Token no proporcionado o formato incorrecto' 
         });
     }
 
+    const token = authHeader.split(' ')[1]; 
+
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { userId: number };
-    
-        req.user = { userId: decoded.userId };
+        const decoded = verifyAccessToken(token);
+        req.user = decoded; 
         
-        next();
+        next(); 
     } catch (error) {
-        return res.status(403).json({ 
-            success: false, 
-            message: "Token inválido o expirado." 
+        return res.status(401).json({ 
+            detail: 'Token inválido o expirado' 
         });
     }
 };

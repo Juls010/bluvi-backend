@@ -1,20 +1,17 @@
-// src/services/emailService.ts
 import nodemailer from 'nodemailer';
 
-// Configuración del transportador (el motor que envía los correos)
 const transporter = nodemailer.createTransport({
-    host: "smtp.ethereal.email", // Cambia esto por smtp.gmail.com para producción
+    host: "smtp.ethereal.email", 
     port: 587,
-    secure: false, // true para puerto 465, false para otros
+    secure: false, 
     auth: {
-        user: process.env.EMAIL_USER, // Tu correo en el archivo .env
-        pass: process.env.EMAIL_PASS, // Tu contraseña en el archivo .env
+        user: process.env.EMAIL_USER, 
+        pass: process.env.EMAIL_PASS, 
     },
 });
 
 export const sendVerificationEmail = async (to: string, code: string) => {
     
-    // 2. Corregimos el log para usar 'to' y 'code'
     console.log("*****************************************");
     console.log("INTENTANDO ENVIAR EMAIL A:", to);
     console.log("CÓDIGO QUE DEBE USAR EL USUARIO:", code);

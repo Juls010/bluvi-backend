@@ -9,7 +9,6 @@ import userRoutes from './routes/userRoutes';
 
 const app = express();
 
-// Middlewares
 app.use(cors({
     origin: 'http://localhost:5173',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -18,7 +17,6 @@ app.use(cors({
 
 app.use(express.json());
 
-// Agrupamos nuestras rutas
 app.use('/api/interests', interestRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
