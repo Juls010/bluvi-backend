@@ -4,7 +4,6 @@ import { authenticateToken } from '../middlewares/authMiddleware';
 
 const router = Router();
 
-// Todas las rutas de usuario protegidas
 router.get('/profile', authenticateToken, getProfile);
 router.put('/profile', authenticateToken, updateProfile);
 router.get('/explore', authenticateToken, getExploreUsers);

@@ -39,15 +39,11 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
             user: result.rows[0]
         });
     } catch (error) {
-        console.error("❌ Error al obtener perfil:", error);
+        console.error("Error al obtener perfil:", error);
         res.status(500).json({ success: false, message: "Error interno" });
     }
 };
 
-/**
- * 1. VERIFICAR DISPONIBILIDAD DE EMAIL
- * Se usa en el frontend mientras el usuario escribe su correo.
- */
 export const checkEmail = async (req: Request, res: Response) => {
     try {
         const { email } = req.body;
@@ -66,12 +62,8 @@ export const checkEmail = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * 2. REGISTRO INICIAL (Pre-verificación)
- * Guarda los datos, cifra la clave y envía el código OTP.
- */
 export const registerStep = async (req: Request, res: Response) => {
-        console.log("📥 Datos recibidos en el Back:", req.body);
+        console.log("Datos recibidos en el Back:", req.body);
         const client = await pool.connect();
         
         try {
@@ -96,7 +88,6 @@ export const registerStep = async (req: Request, res: Response) => {
 
             await client.query('BEGIN');
 
-        // INSERT corregido con los nombres de columna REALES de tu DB
         const userQuery = `
             INSERT INTO users (
                 email, password, first_name, last_name, birth_date, 
@@ -107,7 +98,7 @@ export const registerStep = async (req: Request, res: Response) => {
         `;
 
         const userValues = [
-            email, 
+            email.toLowerCase().trim(), 
             hashedPassword, 
             first_name, 
             last_name, 
@@ -125,7 +116,6 @@ export const registerStep = async (req: Request, res: Response) => {
         const newUser = await client.query(userQuery, userValues);
         const userId = newUser.rows[0].id_user;
 
-        // Inserción de intereses (IDs numéricos)
         if (interests && interests.length > 0) {
             for (const interestId of interests) {
                 await client.query(
@@ -145,7 +135,6 @@ export const registerStep = async (req: Request, res: Response) => {
             }
         }
 
-        // Inserción de photos
         if (photos && Array.isArray(photos)) {
             for (let i = 0; i < photos.length; i++) {
                 const photoData = photos[i];
@@ -192,20 +181,33 @@ export const registerStep = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
+        console.log("🔍 Intentando login para:", email);
+        console.log("🔑 Password recibida del front:", password);
+
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         const user = result.rows[0];
 
-        if (!user || !(await bcrypt.compare(password, user.password))) {
+        if (!user) {
+            console.log("❌ ERROR: El email no existe en la base de datos");
             return res.status(401).json({ success: false, message: "Credenciales incorrectas" });
         }
 
-        // CAMBIO: Usamos la utilidad centralizada de la guía [cite: 85, 112]
+        console.log("👤 Usuario encontrado en DB:", user.email);
+        console.log("🔐 Hash en la DB:", user.password);
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        console.log("⚖️ ¿Bcrypt dice que coinciden?:", isMatch);
+
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: "Credenciales incorrectas" });
+        }
+
         const tokens = generateTokens(user);
 
         res.status(200).json({
             success: true,
             message: "Login exitoso",
-            ...tokens, // Esto envía { access, refresh } 
+            ...tokens, 
             user: { 
                 id: user.id_user, 
                 firstName: user.first_name, 
@@ -224,15 +226,12 @@ export const refresh = async (req: Request, res: Response) => {
     if (!refresh) return res.status(400).json({ message: 'Refresh token requerido' });
 
     try {
-        // 1. Verificamos el token de refresco con la utilidad jwt.ts
         const payload = verifyRefreshToken(refresh);
         
-        // 2. Buscamos al usuario en la BD (con el 'sub' del token)
         const user = await pool.query('SELECT * FROM users WHERE id_user = $1', [payload.sub]);
         
         if (!user.rows[0]) return res.status(401).json({ message: 'Usuario no encontrado' });
 
-        // 3. Generamos un nuevo par de tokens
         return res.json(generateTokens(user.rows[0]));
     } catch {
         return res.status(401).json({ detail: 'Refresh token inválido o expirado' });
@@ -241,7 +240,7 @@ export const refresh = async (req: Request, res: Response) => {
 
 export const verifyEmail = async (req: Request, res: Response) => {
     try {
-        const { email, code } = req.body; // El front envía el email y el código de 6 dígitos
+        const { email, code } = req.body; 
 
         const result = await pool.query(
             'SELECT * FROM users WHERE email = $1 AND verification_code = $2',
@@ -254,18 +253,15 @@ export const verifyEmail = async (req: Request, res: Response) => {
             return res.status(401).json({ success: false, message: "Código incorrecto" });
         }
 
-        // Validar si el código ha expirado
         if (new Date() > new Date(user.code_expires_at)) {
             return res.status(400).json({ success: false, message: "El código ha expirado" });
         }
 
-        // Activar cuenta y limpiar el código como dice la guía 
         await pool.query(
             'UPDATE users SET is_verified = true, verification_code = NULL, code_expires_at = NULL WHERE id_user = $1',
             [user.id_user]
         );
 
-        // Generar tokens para iniciar sesión automáticamente 
         const tokens = generateTokens(user);
 
         res.status(200).json({

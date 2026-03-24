@@ -8,7 +8,6 @@ export const generateTokens = (user: any) => {
         roles: user.roles || ['user']
     };
 
-    // Forzamos el tipo SignOptions para que TypeScript no se queje
     const accessOptions: SignOptions = {
         expiresIn: (process.env.ACCESS_TOKEN_EXPIRY as any) || '15m'
     };
@@ -17,7 +16,6 @@ export const generateTokens = (user: any) => {
         expiresIn: (process.env.REFRESH_TOKEN_EXPIRY as any) || '7d'
     };
 
-    // Usamos '!' para asegurar que la clave no es null o undefined
     const access = jwt.sign(payload, process.env.JWT_SECRET!, accessOptions);
 
     const refresh = jwt.sign(

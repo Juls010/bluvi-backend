@@ -69,7 +69,6 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─── PUT /api/users/profile ───────────────────────────────────────────────────
 
 export const updateProfile = async (req: AuthRequest, res: Response) => {
     try {
@@ -86,28 +85,26 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             city,
             description,
             id_gender,
-            sexuality,           // number[] — IDs de preference
-            photos,              // (string | null)[]
-            interests,           // number[]
-            neurodivergences,    // number[]
-            communication_style, // number[] — IDs de communication_style
+            sexuality,           
+            photos,              
+            interests,           
+            neurodivergences,    
+            communication_style, 
         } = req.body;
 
-        // ── 1. Campos básicos ──────────────────────────────────────────────────
         await pool.query(
             `UPDATE users
-             SET
+            SET
                 first_name  = COALESCE($1, first_name),
                 last_name   = COALESCE($2, last_name),
                 birth_date  = COALESCE($3, birth_date),
                 city        = COALESCE($4, city),
                 description = COALESCE($5, description),
                 id_gender   = COALESCE($6, id_gender)
-             WHERE id_user = $7`,
+            WHERE id_user = $7`,
             [first_name, last_name, birth_date, city, description, id_gender, userId]
         );
 
-        // ── 2. Orientación sexual (user_preference) ────────────────────────────
         if (Array.isArray(sexuality)) {
             await pool.query(`DELETE FROM user_preference WHERE id_user = $1`, [userId]);
             if (sexuality.length > 0) {
@@ -119,7 +116,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // ── 3. Fotos ───────────────────────────────────────────────────────────
         if (Array.isArray(photos)) {
             await pool.query(`DELETE FROM photo WHERE id_user = $1`, [userId]);
             const validPhotos = photos.filter(Boolean) as string[];
@@ -132,7 +128,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // ── 4. Intereses ───────────────────────────────────────────────────────
         if (Array.isArray(interests)) {
             await pool.query(`DELETE FROM user_interest WHERE id_user = $1`, [userId]);
             if (interests.length > 0) {
@@ -144,7 +139,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // ── 5. Neurodivergencias ───────────────────────────────────────────────
         if (Array.isArray(neurodivergences)) {
             await pool.query(`DELETE FROM user_feature WHERE id_user = $1`, [userId]);
             if (neurodivergences.length > 0) {
@@ -156,7 +150,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // ── 6. Estilo de comunicación (user_communication_style) ──────────────
         if (Array.isArray(communication_style)) {
             await pool.query(`DELETE FROM user_communication_style WHERE id_user = $1`, [userId]);
             if (communication_style.length > 0) {
@@ -168,7 +161,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // ── 7. Devolver perfil actualizado ─────────────────────────────────────
         const result = await pool.query(PROFILE_QUERY, [userId]);
         res.status(200).json({ success: true, user: result.rows[0] });
 
@@ -178,7 +170,6 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─── GET /api/users/explore ───────────────────────────────────────────────────
 
 export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     try {
@@ -232,8 +223,6 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
 };
 
 
-// ─── DELETE /api/users/profile ────────────────────────────────────────────────
-
 export const deleteAccount = async (req: AuthRequest, res: Response) => {
     const client = await pool.connect();
     try {
@@ -249,7 +238,6 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, message: "La contraseña es obligatoria" });
         }
 
-        // Verificar que la contraseña es correcta
         const result = await client.query(
             'SELECT password FROM users WHERE id_user = $1',
             [userId]
@@ -264,7 +252,6 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
             return res.status(401).json({ success: false, message: "Contraseña incorrecta" });
         }
 
-        // Borrar en orden para respetar las foreign keys
         await client.query('BEGIN');
 
         await client.query('DELETE FROM user_communication_style WHERE id_user = $1', [userId]);
@@ -287,7 +274,6 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─── PATCH /api/users/privacy ─────────────────────────────────────────────────
 
 export const updatePrivacy = async (req: AuthRequest, res: Response) => {
     try {
@@ -301,10 +287,10 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
 
         await pool.query(
             `UPDATE users
-             SET
+            SET
                 is_visible             = COALESCE($1, is_visible),
                 messages_only_matches  = COALESCE($2, messages_only_matches)
-             WHERE id_user = $3`,
+            WHERE id_user = $3`,
             [is_visible ?? null, messages_only_matches ?? null, userId]
         );
 
@@ -321,7 +307,6 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─── GET /api/users/privacy ───────────────────────────────────────────────────
 
 export const getPrivacy = async (req: AuthRequest, res: Response) => {
     try {
