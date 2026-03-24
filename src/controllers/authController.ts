@@ -215,26 +215,26 @@ export const login = async (req: Request, res: Response) => {
             }
         });
     } catch (error) {
-        console.error("Error en login:", error);
-        res.status(500).json({ success: false, message: "Error interno" });
+        console.error("Login error:", error);
+        res.status(500).json({ success: false, message: "Internal error" });
     }
 };
 
 
 export const refresh = async (req: Request, res: Response) => {
     const { refresh } = req.body;
-    if (!refresh) return res.status(400).json({ message: 'Refresh token requerido' });
+    if (!refresh) return res.status(400).json({ message: 'Refresh token required' });
 
     try {
         const payload = verifyRefreshToken(refresh);
         
         const user = await pool.query('SELECT * FROM users WHERE id_user = $1', [payload.sub]);
         
-        if (!user.rows[0]) return res.status(401).json({ message: 'Usuario no encontrado' });
+        if (!user.rows[0]) return res.status(401).json({ message: 'User not found' });
 
         return res.json(generateTokens(user.rows[0]));
     } catch {
-        return res.status(401).json({ detail: 'Refresh token inválido o expirado' });
+        return res.status(401).json({ detail: 'Invalid or expired refresh token' });
     }
 };
 
@@ -250,11 +250,11 @@ export const verifyEmail = async (req: Request, res: Response) => {
         const user = result.rows[0];
 
         if (!user) {
-            return res.status(401).json({ success: false, message: "Código incorrecto" });
+            return res.status(401).json({ success: false, message: "Invalid code" });
         }
 
         if (new Date() > new Date(user.code_expires_at)) {
-            return res.status(400).json({ success: false, message: "El código ha expirado" });
+            return res.status(400).json({ success: false, message: "The code has expired" });
         }
 
         await pool.query(
@@ -266,12 +266,12 @@ export const verifyEmail = async (req: Request, res: Response) => {
 
         res.status(200).json({
             success: true,
-            message: "Email verificado correctamente",
+            message: "Email address successfully verified",
             ...tokens
         });
 
     } catch (error) {
-        console.error("Error en verificación:", error);
-        res.status(500).json({ success: false, message: "Error interno" });
+        console.error("Error:", error);
+        res.status(500).json({ success: false, message: "Internal error" });
     }
 };

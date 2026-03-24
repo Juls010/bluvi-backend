@@ -45,11 +45,9 @@ const PROFILE_QUERY = `
     GROUP BY u.id_user
 `;
 
-// ─── GET /api/users/profile ───────────────────────────────────────────────────
-
 export const getProfile = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
@@ -72,7 +70,7 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
 
 export const updateProfile = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
@@ -173,7 +171,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
 export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
         const { city, feature, sensory } = req.query;
 
         let queryText = `
@@ -226,7 +224,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
 export const deleteAccount = async (req: AuthRequest, res: Response) => {
     const client = await pool.connect();
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
@@ -277,7 +275,7 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
 
 export const updatePrivacy = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
@@ -310,7 +308,7 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
 
 export const getPrivacy = async (req: AuthRequest, res: Response) => {
     try {
-        const userId = req.user?.userId;
+        const userId = req.user?.sub;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
