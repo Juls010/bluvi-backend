@@ -7,42 +7,24 @@ import bcrypt from 'bcrypt';
 
 const PROFILE_QUERY = `
     SELECT 
-        u.id_user,
-        u.email,
-        u.first_name,
-        u.last_name,
-        u.birth_date,
-        u.city,
-        u.description,
-        u.id_gender,
-        COALESCE(
-            json_agg(DISTINCT up.id_preference) FILTER (WHERE up.id_preference IS NOT NULL),
-            '[]'
-        ) AS sexuality,
-        COALESCE(
-            json_agg(DISTINCT p.url_photo) FILTER (WHERE p.url_photo IS NOT NULL),
-            '[]'
-        ) AS photos,
-        COALESCE(
-            json_agg(DISTINCT ui.id_interest) FILTER (WHERE ui.id_interest IS NOT NULL),
-            '[]'
-        ) AS interests,
-        COALESCE(
-            json_agg(DISTINCT uf.id_feature) FILTER (WHERE uf.id_feature IS NOT NULL),
-            '[]'
-        ) AS neurodivergences,
-        COALESCE(
-            json_agg(DISTINCT ucs.id_communication) FILTER (WHERE ucs.id_communication IS NOT NULL),
-            '[]'
-        ) AS communication_style
+        u.id_user, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender,
+        
+        COALESCE((SELECT json_agg(up.id_preference) FROM user_preference up WHERE up.id_user = u.id_user), '[]') AS sexuality,
+        COALESCE((SELECT json_agg(p.name) FROM user_preference up JOIN preference p ON up.id_preference = p.id_preference WHERE up.id_user = u.id_user), '[]') AS sexuality_names,
+
+        COALESCE((SELECT json_agg(url_photo ORDER BY is_primary DESC) FROM photo WHERE id_user = u.id_user), '[]') AS photos,
+
+        COALESCE((SELECT json_agg(ui.id_interest) FROM user_interest ui WHERE ui.id_user = u.id_user), '[]') AS id_interests,
+        COALESCE((SELECT json_agg(i.name) FROM user_interest ui JOIN interest i ON ui.id_interest = i.id_interest WHERE ui.id_user = u.id_user), '[]') AS interest_names,
+
+        COALESCE((SELECT json_agg(uf.id_feature) FROM user_feature uf WHERE uf.id_user = u.id_user), '[]') AS id_neurodivergences,
+        COALESCE((SELECT json_agg(f.name) FROM user_feature uf JOIN feature f ON uf.id_feature = f.id_feature WHERE uf.id_user = u.id_user), '[]') AS neurodivergence_names,
+
+        COALESCE((SELECT json_agg(ucs.id_communication) FROM user_communication_style ucs WHERE ucs.id_user = u.id_user), '[]') AS id_communication_style,
+        COALESCE((SELECT json_agg(cs.name) FROM user_communication_style ucs JOIN communication_style cs ON ucs.id_communication = cs.id_communication WHERE ucs.id_user = u.id_user), '[]') AS communication_names
+
     FROM users u
-    LEFT JOIN user_preference up ON u.id_user = up.id_user
-    LEFT JOIN photo p ON u.id_user = p.id_user
-    LEFT JOIN user_interest ui ON u.id_user = ui.id_user
-    LEFT JOIN user_feature uf ON u.id_user = uf.id_user
-    LEFT JOIN user_communication_style ucs ON u.id_user = ucs.id_user
     WHERE u.id_user = $1
-    GROUP BY u.id_user
 `;
 
 export const getProfile = async (req: AuthRequest, res: Response) => {
@@ -176,10 +158,24 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
 
         let queryText = `
             SELECT
-                u.id_user, u.first_name, u.city, u.description,
+                u.id_user, 
+                u.first_name, 
+                u.last_name,      
+                u.birth_date,     
+                u.city, 
+                u.description, 
+                u.id_gender,      
+                u.id_preference,  
                 (SELECT url_photo FROM photo WHERE id_user = u.id_user LIMIT 1) as main_photo,
                 COALESCE(json_agg(DISTINCT i.name) FILTER (WHERE i.name IS NOT NULL), '[]') as interests,
-                COALESCE(json_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL), '[]') as features
+                COALESCE(json_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL), '[]') as features,
+                COALESCE(
+                    (SELECT json_agg(cat.name) 
+                    FROM user_communication_style ucs 
+                    JOIN communication_style cat ON ucs.id_communication = cat.id_communication 
+                    WHERE ucs.id_user = u.id_user), 
+                    '[]'
+                ) as communication_style
             FROM users u
             LEFT JOIN user_interest ui ON u.id_user = ui.id_user
             LEFT JOIN interest i ON ui.id_interest = i.id_interest
@@ -209,7 +205,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
-        queryText += ` GROUP BY u.id_user LIMIT 20`;
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference LIMIT 20`;
 
         const result = await pool.query(queryText, queryParams);
         res.status(200).json({ success: true, count: result.rows.length, users: result.rows });

@@ -78,14 +78,15 @@ export const registerStep = async (req: Request, res: Response) => {
                 city, 
                 description, 
                 interests, 
-                neurodivergences, 
+                neurodivergences,
+                communication_style, 
                 photos 
             } = req.body;
 
             const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
             const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
             const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-
+            
             await client.query('BEGIN');
 
         const userQuery = `
@@ -131,6 +132,15 @@ export const registerStep = async (req: Request, res: Response) => {
                 await client.query(
                     'INSERT INTO user_feature (id_user, id_feature) VALUES ($1, $2)', 
                     [userId, featureId]
+                );
+            }
+        }
+
+        if (communication_style && Array.isArray(communication_style) && communication_style.length > 0) {
+            for (const commId of communication_style) {
+                await client.query(
+                    'INSERT INTO user_communication_style (id_user, id_communication) VALUES ($1, $2)', 
+                    [userId, commId]
                 );
             }
         }
