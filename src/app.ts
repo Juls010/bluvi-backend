@@ -6,6 +6,7 @@ import cors from 'cors';
 import authRoutes from './routes/authRoutes';
 import interestRoutes from './routes/interestRoutes';
 import userRoutes from './routes/userRoutes';
+import matchRoutes from './routes/matchRoutes';
 
 const app = express();
 
@@ -35,6 +36,7 @@ app.use(cookieParser());
 app.use('/api/interests', interestRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/matches', matchRoutes);
 
 
 app.get('/', (req, res) => {

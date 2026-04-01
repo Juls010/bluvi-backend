@@ -3,6 +3,53 @@ import { AuthRequest } from '../middlewares/authMiddleware';
 import { Response } from 'express';
 import bcrypt from 'bcrypt';
 
+let matchTableReadyPromise: Promise<void> | null = null;
+let discoverySeenTableReadyPromise: Promise<void> | null = null;
+
+const ensureMatchRequestTable = async () => {
+    if (!matchTableReadyPromise) {
+        matchTableReadyPromise = (async () => {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS match_request (
+                    id_request SERIAL PRIMARY KEY,
+                    requester_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    target_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    icebreaker_message TEXT NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    responded_at TIMESTAMPTZ,
+                    CONSTRAINT uniq_match_direction UNIQUE (requester_id, target_id),
+                    CONSTRAINT no_self_match CHECK (requester_id <> target_id)
+                )
+            `);
+        })();
+    }
+
+    await matchTableReadyPromise;
+};
+
+const ensureDiscoverySeenTable = async () => {
+    if (!discoverySeenTableReadyPromise) {
+        discoverySeenTableReadyPromise = (async () => {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS user_discovery_seen (
+                    id_seen SERIAL PRIMARY KEY,
+                    id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    seen_user_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    action VARCHAR(20) NOT NULL DEFAULT 'passed' CHECK (action IN ('passed', 'liked', 'dismissed')),
+                    seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uniq_discovery_seen_pair UNIQUE (id_user, seen_user_id),
+                    CONSTRAINT no_self_seen CHECK (id_user <> seen_user_id)
+                )
+            `);
+
+            await pool.query('CREATE INDEX IF NOT EXISTS idx_discovery_seen_user ON user_discovery_seen (id_user, seen_at DESC)');
+        })();
+    }
+
+    await discoverySeenTableReadyPromise;
+};
+
 // ─── Query reutilizable ───────────────────────────────────────────────────────
 
 const PROFILE_QUERY = `
@@ -153,8 +200,17 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
 export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     try {
+        await ensureMatchRequestTable();
+        await ensureDiscoverySeenTable();
+
         const userId = req.user?.sub;
-        const { city, feature, sensory, search, interests, communicationStyle } = req.query;
+        const { city, feature, sensory, search, interests, communicationStyle, cursor, limit, excludeSeen } = req.query;
+
+        const parsedCursor = Number(cursor);
+        const parsedLimit = Number(limit);
+        const cursorValue = Number.isInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : null;
+        const pageSize = Number.isInteger(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 50) : 20;
+        const shouldExcludeSeen = String(excludeSeen ?? 'true').toLowerCase() !== 'false';
 
         const toArray = (value: unknown): string[] => {
             if (!value) return [];
@@ -200,7 +256,24 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             LEFT JOIN interest i ON ui.id_interest = i.id_interest
             LEFT JOIN user_feature uf ON u.id_user = uf.id_user
             LEFT JOIN feature f ON uf.id_feature = f.id_feature
-            WHERE u.id_user != $1 AND u.is_verified = true
+                        WHERE u.id_user != $1
+                            AND u.is_verified = true
+                            AND NOT EXISTS (
+                                        SELECT 1
+                                        FROM match_request mr
+                                        WHERE (
+                                                (mr.requester_id = $1 AND mr.target_id = u.id_user)
+                                                OR (mr.requester_id = u.id_user AND mr.target_id = $1)
+                                        )
+                                        AND mr.status = 'accepted'
+                            )
+                            AND NOT EXISTS (
+                                        SELECT 1
+                                        FROM match_request mr
+                                        WHERE mr.requester_id = $1
+                                            AND mr.target_id = u.id_user
+                                            AND mr.status = 'pending'
+                            )
         `;
 
         const queryParams: any[] = [userId];
@@ -263,10 +336,40 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
-        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference ORDER BY u.id_user DESC LIMIT 20`;
+        if (shouldExcludeSeen) {
+            queryText += `
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM user_discovery_seen uds
+                    WHERE uds.id_user = $1
+                      AND uds.seen_user_id = u.id_user
+                )
+            `;
+        }
+
+        if (cursorValue) {
+            queryText += ` AND u.id_user < $${paramCount}`;
+            queryParams.push(cursorValue);
+            paramCount++;
+        }
+
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference ORDER BY u.id_user DESC LIMIT $${paramCount}`;
+        queryParams.push(pageSize + 1);
 
         const result = await pool.query(queryText, queryParams);
-        res.status(200).json({ success: true, count: result.rows.length, users: result.rows });
+
+        const hasMore = result.rows.length > pageSize;
+        const users = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+        const nextCursor = hasMore && users.length > 0 ? users[users.length - 1].id_user : null;
+
+        res.status(200).json({
+            success: true,
+            count: users.length,
+            users,
+            hasMore,
+            nextCursor,
+            limit: pageSize,
+        });
 
     } catch (error) {
         console.error("Error en explorar:", error);
@@ -378,5 +481,39 @@ export const getPrivacy = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error("Error al obtener privacidad:", error);
         res.status(500).json({ success: false, message: "Error interno" });
+    }
+};
+
+export const markDiscoverUserSeen = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureDiscoverySeenTable();
+
+        const userId = req.user?.sub;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const seenUserId = Number(req.body?.seenUserId);
+        const actionRaw = String(req.body?.action || 'passed').toLowerCase();
+        const action = ['passed', 'liked', 'dismissed'].includes(actionRaw) ? actionRaw : 'passed';
+
+        if (!Number.isInteger(seenUserId) || seenUserId <= 0 || seenUserId === userId) {
+            return res.status(400).json({ success: false, message: 'seenUserId inválido' });
+        }
+
+        await pool.query(
+            `
+                INSERT INTO user_discovery_seen (id_user, seen_user_id, action)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (id_user, seen_user_id)
+                DO UPDATE SET action = EXCLUDED.action, seen_at = NOW()
+            `,
+            [userId, seenUserId, action]
+        );
+
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Error en markDiscoverUserSeen:', error);
+        return res.status(500).json({ success: false, message: 'Error al registrar perfil visto' });
     }
 };
