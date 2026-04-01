@@ -154,7 +154,26 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.sub;
-        const { city, feature, sensory } = req.query;
+        const { city, feature, sensory, search, interests, communicationStyle } = req.query;
+
+        const toArray = (value: unknown): string[] => {
+            if (!value) return [];
+            if (Array.isArray(value)) {
+                return value
+                    .flatMap((item) => String(item).split(','))
+                    .map((item) => item.trim())
+                    .filter(Boolean);
+            }
+
+            return String(value)
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
+        };
+
+        const sensoryFilters = toArray(sensory).map((item) => item.toLowerCase());
+        const interestFilters = toArray(interests).map((item) => item.toLowerCase());
+        const communicationFilters = toArray(communicationStyle).map((item) => item.toLowerCase());
 
         let queryText = `
             SELECT
@@ -187,9 +206,20 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         const queryParams: any[] = [userId];
         let paramCount = 2;
 
+        if (search) {
+            queryText += ` AND (
+                u.first_name ILIKE $${paramCount}
+                OR u.last_name ILIKE $${paramCount}
+                OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $${paramCount}
+                OR COALESCE(u.description, '') ILIKE $${paramCount}
+            )`;
+            queryParams.push(`%${String(search).trim()}%`);
+            paramCount++;
+        }
+
         if (city) {
-            queryText += ` AND u.city = $${paramCount}`;
-            queryParams.push(city);
+            queryText += ` AND u.city ILIKE $${paramCount}`;
+            queryParams.push(`%${String(city).trim()}%`);
             paramCount++;
         }
 
@@ -199,13 +229,41 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
-        if (sensory) {
-            queryText += ` AND f.name = $${paramCount}`;
-            queryParams.push(sensory);
+        if (sensoryFilters.length > 0) {
+            queryText += ` AND LOWER(f.name) = ANY($${paramCount}::text[])`;
+            queryParams.push(sensoryFilters);
             paramCount++;
         }
 
-        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference LIMIT 20`;
+        if (interestFilters.length > 0) {
+            queryText += `
+                AND EXISTS (
+                    SELECT 1
+                    FROM user_interest ui2
+                    JOIN interest i2 ON i2.id_interest = ui2.id_interest
+                    WHERE ui2.id_user = u.id_user
+                    AND LOWER(i2.name) = ANY($${paramCount}::text[])
+                )
+            `;
+            queryParams.push(interestFilters);
+            paramCount++;
+        }
+
+        if (communicationFilters.length > 0) {
+            queryText += `
+                AND EXISTS (
+                    SELECT 1
+                    FROM user_communication_style ucs2
+                    JOIN communication_style cs2 ON cs2.id_communication = ucs2.id_communication
+                    WHERE ucs2.id_user = u.id_user
+                    AND LOWER(cs2.name) = ANY($${paramCount}::text[])
+                )
+            `;
+            queryParams.push(communicationFilters);
+            paramCount++;
+        }
+
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference ORDER BY u.id_user DESC LIMIT 20`;
 
         const result = await pool.query(queryText, queryParams);
         res.status(200).json({ success: true, count: result.rows.length, users: result.rows });
