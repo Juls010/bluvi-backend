@@ -83,6 +83,14 @@ export const registerStep = async (req: Request, res: Response) => {
                 photos 
             } = req.body;
 
+            const parsedPreference = id_preference !== null && id_preference !== undefined && id_preference !== ''
+                ? Number(id_preference)
+                : null;
+
+            if (!Number.isInteger(parsedPreference)) {
+                throw new Error('Preferencia requerida');
+            }
+
             const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
             const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
             const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
@@ -105,7 +113,7 @@ export const registerStep = async (req: Request, res: Response) => {
             last_name, 
             birth_date,
             id_gender, 
-            id_preference, 
+            parsedPreference, 
             city, 
             description,
             verificationCode, 
@@ -116,6 +124,11 @@ export const registerStep = async (req: Request, res: Response) => {
 
         const newUser = await client.query(userQuery, userValues);
         const userId = newUser.rows[0].id_user;
+
+        await client.query(
+            'INSERT INTO user_preference (id_user, id_preference) VALUES ($1, $2)',
+            [userId, parsedPreference]
+        );
 
         if (interests && interests.length > 0) {
             for (const interestId of interests) {

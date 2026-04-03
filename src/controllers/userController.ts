@@ -56,8 +56,25 @@ const PROFILE_QUERY = `
     SELECT 
         u.id_user, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender,
         
-        COALESCE((SELECT json_agg(up.id_preference) FROM user_preference up WHERE up.id_user = u.id_user), '[]') AS sexuality,
-        COALESCE((SELECT json_agg(p.name) FROM user_preference up JOIN preference p ON up.id_preference = p.id_preference WHERE up.id_user = u.id_user), '[]') AS sexuality_names,
+        COALESCE(
+            (SELECT json_agg(up.id_preference::integer) FROM user_preference up WHERE up.id_user = u.id_user),
+            CASE
+                WHEN u.id_preference IS NULL THEN '[]'::json
+                ELSE json_build_array(u.id_preference::integer)
+            END
+        ) AS sexuality,
+        COALESCE(
+            (SELECT json_agg(p.name) FROM user_preference up JOIN preference p ON up.id_preference = p.id_preference WHERE up.id_user = u.id_user),
+            CASE
+                WHEN u.id_preference IS NULL THEN '[]'::json
+                ELSE (
+                    SELECT json_agg(p2.name)
+                    FROM preference p2
+                    WHERE p2.id_preference = u.id_preference::integer
+                )
+            END,
+            '[]'::json
+        ) AS sexuality_names,
 
         COALESCE((SELECT json_agg(url_photo ORDER BY is_primary DESC) FROM photo WHERE id_user = u.id_user), '[]') AS photos,
 
@@ -204,6 +221,25 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         await ensureDiscoverySeenTable();
 
         const userId = req.user?.sub;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const currentProfileResult = await pool.query(
+            `SELECT
+                u.id_gender,
+                COALESCE(
+                    (SELECT up.id_preference FROM user_preference up WHERE up.id_user = u.id_user LIMIT 1),
+                    u.id_preference::integer
+                )::integer AS id_preference
+             FROM users u
+             WHERE u.id_user = $1`,
+            [userId]
+        );
+
+        const currentProfile = currentProfileResult.rows[0];
+        const currentGender = Number(currentProfile?.id_gender);
+        const currentPreference = Number(currentProfile?.id_preference);
         const { city, feature, sensory, search, interests, communicationStyle, cursor, limit, excludeSeen } = req.query;
 
         const parsedCursor = Number(cursor);
@@ -230,6 +266,43 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         const sensoryFilters = toArray(sensory).map((item) => item.toLowerCase());
         const interestFilters = toArray(interests).map((item) => item.toLowerCase());
         const communicationFilters = toArray(communicationStyle).map((item) => item.toLowerCase());
+        const effectiveCandidatePreferenceSql = `COALESCE(
+            (SELECT up.id_preference FROM user_preference up WHERE up.id_user = u.id_user LIMIT 1),
+            u.id_preference::integer
+        )::integer`;
+
+        const addCompatibilityFilter = () => {
+            if (!Number.isInteger(currentGender) || !Number.isInteger(currentPreference)) {
+                return;
+            }
+
+            if (currentGender === 3 || currentGender === 4) {
+                return;
+            }
+
+            if (currentPreference === 1 && (currentGender === 1 || currentGender === 2)) {
+                queryText += ` AND u.id_gender IS NOT NULL AND u.id_gender <> $${paramCount}`;
+                queryParams.push(currentGender);
+                paramCount++;
+                queryText += ` AND ${effectiveCandidatePreferenceSql} NOT IN (3, 4)`;
+                return;
+            }
+
+            if (currentPreference === 3 && currentGender === 1) {
+                queryText += ` AND u.id_gender = $${paramCount}`;
+                queryParams.push(currentGender);
+                paramCount++;
+                queryText += ` AND ${effectiveCandidatePreferenceSql} IN (3, 2, 5, 6, 7)`;
+                return;
+            }
+
+            if (currentPreference === 4 && currentGender === 2) {
+                queryText += ` AND u.id_gender = $${paramCount}`;
+                queryParams.push(currentGender);
+                paramCount++;
+                queryText += ` AND ${effectiveCandidatePreferenceSql} IN (4, 2, 5, 6, 7)`;
+            }
+        };
 
         let queryText = `
             SELECT
@@ -278,6 +351,8 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
 
         const queryParams: any[] = [userId];
         let paramCount = 2;
+
+        addCompatibilityFilter();
 
         if (search) {
             queryText += ` AND (
@@ -515,5 +590,139 @@ export const markDiscoverUserSeen = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error('Error en markDiscoverUserSeen:', error);
         return res.status(500).json({ success: false, message: 'Error al registrar perfil visto' });
+    }
+};
+
+export const getUserProfile = async (req: AuthRequest, res: Response) => {
+    try {
+        const requestingUserId = Number(req.user?.sub);
+        const targetUserId = Number(req.params.userId);
+
+        if (!Number.isInteger(requestingUserId) || requestingUserId <= 0) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+            return res.status(400).json({ success: false, message: 'Usuario inválido' });
+        }
+
+        // Verificar que hay un match aceptado entre los dos usuarios
+        const matchCheck = await pool.query(
+            `
+                SELECT * FROM match_request 
+                WHERE ((requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1))
+                  AND status = 'accepted'
+                LIMIT 1
+            `,
+            [requestingUserId, targetUserId]
+        );
+
+        if (matchCheck.rows.length === 0) {
+            return res.status(403).json({ success: false, message: 'No tienes acceso a este perfil' });
+        }
+
+        // Obtener perfil del usuario
+        const userResult = await pool.query(
+            `
+                SELECT
+                    u.id_user,
+                    u.first_name,
+                    u.last_name,
+                    u.birth_date,
+                    u.city,
+                    u.id_gender,
+                    u.id_preference,
+                    u.description,
+                    u.is_visible,
+                    u.messages_only_matches,
+                    u.created_at
+                FROM users u
+                WHERE u.id_user = $1 AND u.is_verified = true
+            `,
+            [targetUserId]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+        }
+
+        const user = userResult.rows[0];
+
+        // Obtener fotos
+        const photosResult = await pool.query(
+            `
+                SELECT url_photo as main_photo
+                FROM photo
+                WHERE id_user = $1
+                ORDER BY is_primary DESC, id_photo ASC
+            `,
+            [targetUserId]
+        );
+
+        const photos = photosResult.rows.map((row: any) => row.main_photo);
+
+        // Obtener intereses
+        const interestsResult = await pool.query(
+            `
+                SELECT i.name
+                FROM user_interest ui
+                JOIN interest i ON ui.id_interest = i.id_interest
+                WHERE ui.id_user = $1
+                ORDER BY i.name ASC
+            `,
+            [targetUserId]
+        );
+
+        const interests = interestsResult.rows.map((row: any) => row.name);
+
+        // Obtener rasgos (features)
+        const featuresResult = await pool.query(
+            `
+                SELECT f.name
+                FROM user_feature uf
+                JOIN feature f ON uf.id_feature = f.id_feature
+                WHERE uf.id_user = $1
+                ORDER BY f.name ASC
+            `,
+            [targetUserId]
+        );
+
+        const features = featuresResult.rows.map((row: any) => row.name);
+
+        // Obtener estilos de comunicación
+        const communicationResult = await pool.query(
+            `
+                SELECT cs.name
+                FROM user_communication_style ucs
+                JOIN communication_style cs ON ucs.id_communication = cs.id_communication
+                WHERE ucs.id_user = $1
+                ORDER BY cs.name ASC
+            `,
+            [targetUserId]
+        );
+
+        const communicationStyle = communicationResult.rows.map((row: any) => row.name);
+
+        return res.status(200).json({
+            success: true,
+            user: {
+                id_user: user.id_user,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                birth_date: user.birth_date,
+                city: user.city,
+                id_gender: user.id_gender,
+                id_preference: user.id_preference,
+                description: user.description,
+                main_photo: photos[0] || null,
+                photos,
+                interests,
+                features,
+                communication_style: communicationStyle,
+            }
+        });
+    } catch (error) {
+        console.error('Error en getUserProfile:', error);
+        return res.status(500).json({ success: false, message: 'Error al obtener perfil' });
     }
 };

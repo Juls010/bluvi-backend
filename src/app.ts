@@ -7,6 +7,7 @@ import authRoutes from './routes/authRoutes';
 import interestRoutes from './routes/interestRoutes';
 import userRoutes from './routes/userRoutes';
 import matchRoutes from './routes/matchRoutes';
+import chatRoutes from './routes/chatRoutes';
 
 const app = express();
 
@@ -37,6 +38,7 @@ app.use('/api/interests', interestRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/matches', matchRoutes);
+app.use('/api/chats', chatRoutes);
 
 
 app.get('/', (req, res) => {
