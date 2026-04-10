@@ -1,12 +1,81 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { z } from 'zod';
 import { pool } from '../config/db';
 import { sendVerificationEmail } from '../services/emailService';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { generateTokens, verifyRefreshToken } from '../services/jwt';
+import {
+    checkEmailAttemptBlocked,
+    checkLoginAttemptBlocked,
+    clearEmailFailures,
+    clearLoginFailures,
+    getClientIp,
+    registerEmailFailure,
+    registerLoginFailure,
+} from '../middlewares/rateLimit';
 
 const SALT_ROUNDS = 10;
+
+const envInt = (value: string | undefined, fallback: number, min = 1) => {
+    const parsed = Number.parseInt(value || '', 10);
+    if (!Number.isFinite(parsed) || parsed < min) {
+        return fallback;
+    }
+    return parsed;
+};
+
+// Login brute-force protection configuration from environment variables
+const LOGIN_GUARD_OPTIONS = {
+    windowMs: envInt(process.env.LOGIN_GUARD_WINDOW_MS, 15 * 60 * 1000),
+    maxAttempts: envInt(process.env.LOGIN_GUARD_MAX_ATTEMPTS, 5),
+    blockMs: envInt(process.env.LOGIN_GUARD_BLOCK_MS, 15 * 60 * 1000),
+};
+
+const EMAIL_GUARD_OPTIONS = {
+    windowMs: envInt(process.env.EMAIL_GUARD_WINDOW_MS, 30 * 60 * 1000),
+    maxAttempts: envInt(process.env.EMAIL_GUARD_MAX_ATTEMPTS, 12),
+    blockMs: envInt(process.env.EMAIL_GUARD_BLOCK_MS, 30 * 60 * 1000),
+};
+
+const dataUriOrHttpUrl = /^(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+|https?:\/\/\S+)$/;
+
+const checkEmailSchema = z.object({
+    email: z.string().trim().email().max(254),
+});
+
+const loginSchema = z.object({
+    email: z.string().trim().email().max(254),
+    password: z.string().min(1).max(200),
+});
+
+const verifyEmailSchema = z.object({
+    email: z.string().trim().email().max(254),
+    code: z.string().trim().regex(/^\d{6}$/, 'Codigo invalido'),
+});
+
+const registerSchema = z.object({
+    email: z.string().trim().email().max(254),
+    password: z.string().min(8).max(72),
+    first_name: z.string().trim().min(1).max(80),
+    last_name: z.string().trim().min(1).max(80),
+    birth_date: z.string().trim().min(1),
+    id_gender: z.coerce.number().int().positive(),
+    id_preference: z.coerce.number().int().positive(),
+    city: z.string().trim().min(1).max(120),
+    description: z.string().trim().min(1).max(1200),
+    interests: z.array(z.coerce.number().int().positive()).max(50).optional().default([]),
+    neurodivergences: z.array(z.coerce.number().int().positive()).max(50).optional().default([]),
+    communication_style: z.array(z.coerce.number().int().positive()).max(50).optional().default([]),
+    photos: z
+        .preprocess(
+            (value) => Array.isArray(value) ? value.filter((item) => typeof item === 'string') : value,
+            z.array(z.string().trim().min(1).max(2_000_000).regex(dataUriOrHttpUrl, 'Formato de foto invalido')).max(8)
+        )
+        .optional()
+        .default([]),
+});
 
 export const getProfile = async (req: AuthRequest, res: Response) => {
     try {
@@ -46,8 +115,12 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
 
 export const checkEmail = async (req: Request, res: Response) => {
     try {
-        const { email } = req.body;
-        if (!email) return res.status(400).json({ success: false, message: "Email requerido" });
+        const parsed = checkEmailSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        const { email } = parsed.data;
 
         const result = await pool.query('SELECT id_user FROM users WHERE email = $1', [email]);
         
@@ -67,6 +140,14 @@ export const registerStep = async (req: Request, res: Response) => {
         const client = await pool.connect();
         
         try {
+            const parsed = registerSchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({
+                    success: false,
+                    message: parsed.error.issues[0]?.message || 'Datos invalidos',
+                });
+            }
+
             const { 
                 email, 
                 password, 
@@ -81,15 +162,7 @@ export const registerStep = async (req: Request, res: Response) => {
                 neurodivergences,
                 communication_style, 
                 photos 
-            } = req.body;
-
-            const parsedPreference = id_preference !== null && id_preference !== undefined && id_preference !== ''
-                ? Number(id_preference)
-                : null;
-
-            if (!Number.isInteger(parsedPreference)) {
-                throw new Error('Preferencia requerida');
-            }
+            } = parsed.data;
 
             const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
             const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -113,7 +186,7 @@ export const registerStep = async (req: Request, res: Response) => {
             last_name, 
             birth_date,
             id_gender, 
-            parsedPreference, 
+            id_preference, 
             city, 
             description,
             verificationCode, 
@@ -127,7 +200,7 @@ export const registerStep = async (req: Request, res: Response) => {
 
         await client.query(
             'INSERT INTO user_preference (id_user, id_preference) VALUES ($1, $2)',
-            [userId, parsedPreference]
+            [userId, id_preference]
         );
 
         if (interests && interests.length > 0) {
@@ -214,14 +287,57 @@ const cookieOptions: any = {
 export const login = async (req: Request, res: Response) => {
     console.log("1. Entrando en LOGIN real");
     try {
-        const { email, password } = req.body; 
+        const parsed = loginSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
 
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        const { email, password } = parsed.data;
+        const normalizedEmail = email.toLowerCase().trim();
+        const clientIp = getClientIp(req);
+
+        const preCheck = checkLoginAttemptBlocked(normalizedEmail, clientIp, LOGIN_GUARD_OPTIONS);
+        if (preCheck.blocked) {
+            res.setHeader('Retry-After', String(preCheck.retryAfterSeconds));
+            return res.status(429).json({
+                success: false,
+                message: 'Demasiados intentos de login para esta cuenta desde tu red. Espera unos minutos.',
+                retryAfterSeconds: preCheck.retryAfterSeconds,
+            });
+        }
+
+        const emailPreCheck = checkEmailAttemptBlocked(normalizedEmail, EMAIL_GUARD_OPTIONS);
+        if (emailPreCheck.blocked) {
+            res.setHeader('Retry-After', String(emailPreCheck.retryAfterSeconds));
+            return res.status(429).json({
+                success: false,
+                message: 'Cuenta temporalmente protegida por demasiados intentos. Espera unos minutos.',
+                retryAfterSeconds: emailPreCheck.retryAfterSeconds,
+            });
+        }
+
+        const result = await pool.query('SELECT * FROM users WHERE email = $1', [normalizedEmail]);
         const user = result.rows[0];
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
+            const state = registerLoginFailure(normalizedEmail, clientIp, LOGIN_GUARD_OPTIONS);
+            const emailState = registerEmailFailure(normalizedEmail, EMAIL_GUARD_OPTIONS);
+            const retryAfterSeconds = Math.max(state.retryAfterSeconds, emailState.retryAfterSeconds);
+
+            if (state.blocked || emailState.blocked) {
+                res.setHeader('Retry-After', String(retryAfterSeconds));
+                return res.status(429).json({
+                    success: false,
+                    message: 'Demasiados intentos de login. Espera unos minutos.',
+                    retryAfterSeconds,
+                });
+            }
+
             return res.status(401).json({ success: false, message: "Credenciales incorrectas" });
         }
+
+        clearLoginFailures(normalizedEmail, clientIp);
+        clearEmailFailures(normalizedEmail);
 
         const tokens = generateTokens(user);
 
@@ -270,7 +386,12 @@ export const refresh = async (req: Request, res: Response) => {
 
 export const verifyEmail = async (req: Request, res: Response) => {
     try {
-        const { email, code } = req.body; 
+        const parsed = verifyEmailSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        const { email, code } = parsed.data;
         const result = await pool.query(
             'SELECT * FROM users WHERE email = $1 AND verification_code = $2',
             [email, code]

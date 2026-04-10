@@ -23,19 +23,46 @@ Esta es la API REST que sustenta la plataforma **Bluvi**. Está diseñada bajo u
     ```
 
 3.  **Configuración de Variables de Entorno:**
-    Crea un archivo `.env` en la raíz del proyecto (este archivo está ignorado por Git por seguridad) y añade lo siguiente:
-    ```env
-    PORT=3000
-    DATABASE_URL="postgresql://bluvi_user:bluvi_password@localhost:5432/bluvi_database"
-    JWT_SECRET="Bluvi-Safe-Connections-2026-Auth-Secret-Key!"
+    Copia `.env.example` a `.env` y completa los valores reales:
+    ```bash
+    cp .env.example .env
     ```
+
+    Variables clave:
+    - `JWT_ACCESS_SECRET` y `JWT_REFRESH_SECRET`: secretos largos y diferentes.
+    - `ALLOWED_ORIGINS`: lista de orígenes frontend separados por coma.
+    - `TRUST_PROXY=true`: si despliegas detrás de Nginx/Render/Railway/Cloudflare.
 
 ## Gestión de Base de Datos (Docker)
 
-La base de datos PostgreSQL se gestiona mediante Docker para evitar instalaciones locales complejas:
+El entorno local de desarrollo puede levantarse con Docker usando tres servicios:
 
-* **Levantar base de datos:** `docker-compose up -d`
-* **Detener base de datos:** `docker-compose stop`
+* **Node.js**: ejecuta la API en modo desarrollo.
+* **PostgreSQL**: base de datos local para pruebas.
+* **Redis**: apoyo para caché, rate limit o colas si se activa en el backend.
+
+* **Levantar todo el stack:** `docker-compose up -d`
+* **Ver logs:** `docker-compose logs -f app`
+* **Detener todo:** `docker-compose down`
+
+Si más adelante migras la base de datos a Supabase, solo tendrás que cambiar `DATABASE_URL` por la cadena de conexión de Supabase y dejar de usar el servicio `db` local.
+
+### Migración a Supabase
+
+1. Crea el proyecto en Supabase y copia la conexión directa de PostgreSQL.
+2. En producción, pon `DATABASE_SSL=true`.
+3. Exporta tu base local con `pg_dump`.
+4. Restaura el dump en Supabase con `psql` o con el SQL editor de Supabase.
+5. Cambia `DATABASE_URL` en tu entorno de despliegue.
+6. Mantén Docker solo para desarrollo local si te sigue siendo útil.
+
+## Seguridad mínima para publicar (beta)
+
+- Cabeceras seguras con `helmet` activadas.
+- CORS restringido por `ALLOWED_ORIGINS`.
+- Rate limiting global y estricto en rutas de autenticación.
+- Validación de payloads con `zod` antes de tocar base de datos.
+- Cookies de refresh token `httpOnly` y `secure` en producción.
 
 
 

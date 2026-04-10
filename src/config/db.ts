@@ -1,9 +1,9 @@
 import { Pool } from 'pg';
 
 export const pool = new Pool({
-    user: 'bluvi_user',
-    host: '127.0.0.1',
-    database: 'bluvi_database',
-    password: 'bluvi_password',
-    port: 5432,
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_SSL === 'true' || process.env.DATABASE_URL?.includes('supabase.co')
+        ? { rejectUnauthorized: false }
+        : false,
+    max: 10,
 });

@@ -1,10 +1,31 @@
 version: '3.8'
 
 services:
+  app:
+    image: node:22-alpine
+    container_name: bluvi_app
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://bluvi_user:bluvi_password@db:5432/bluvi_database
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+      - redis
+
   db:
     image: postgres:15
     container_name: bluvi_db
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: bluvi_user
       POSTGRES_PASSWORD: bluvi_password
@@ -14,5 +35,15 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    container_name: bluvi_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
 volumes:
   postgres_data:
+  redis_data:

@@ -1,4 +1,13 @@
 node_modules/
 dist/
 .env
+.env.production
 *.log
+
+# Database backups
+backup*.sql
+*.backup.sql
+
+# Local infra/private scripts
+supabase-private.sql
+docker-compose.yml

@@ -2,9 +2,46 @@ import { pool } from '../config/db';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { Response } from 'express';
 import bcrypt from 'bcrypt';
+import { z } from 'zod';
 
 let matchTableReadyPromise: Promise<void> | null = null;
 let discoverySeenTableReadyPromise: Promise<void> | null = null;
+
+const dataUriOrHttpUrl = /^(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+|https?:\/\/\S+)$/;
+
+const intArraySchema = z.array(z.coerce.number().int().positive()).max(80);
+
+const updateProfileSchema = z.object({
+    first_name: z.string().trim().min(1).max(80).optional(),
+    last_name: z.string().trim().min(1).max(80).optional(),
+    birth_date: z.string().trim().min(1).optional(),
+    city: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().min(1).max(1200).optional(),
+    id_gender: z.coerce.number().int().positive().optional(),
+    sexuality: intArraySchema.optional(),
+    interests: intArraySchema.optional(),
+    neurodivergences: intArraySchema.optional(),
+    communication_style: intArraySchema.optional(),
+    photos: z.array(z.string().trim().min(1).max(2_000_000).regex(dataUriOrHttpUrl, 'Formato de foto invalido')).max(8).optional(),
+});
+
+const deleteAccountSchema = z.object({
+    password: z.string().min(8).max(200),
+});
+
+const updatePrivacySchema = z
+    .object({
+        is_visible: z.boolean().optional(),
+        messages_only_matches: z.boolean().optional(),
+    })
+    .refine((body) => body.is_visible !== undefined || body.messages_only_matches !== undefined, {
+        message: 'Debes enviar al menos un campo para actualizar',
+    });
+
+const markSeenSchema = z.object({
+    seenUserId: z.coerce.number().int().positive(),
+    action: z.enum(['passed', 'liked', 'dismissed']).optional().default('passed'),
+});
 
 const ensureMatchRequestTable = async () => {
     if (!matchTableReadyPromise) {
@@ -134,7 +171,13 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
             interests,           
             neurodivergences,    
             communication_style, 
-        } = req.body;
+        } = (() => {
+            const parsed = updateProfileSchema.safeParse(req.body);
+            if (!parsed.success) {
+                throw new Error(parsed.error.issues[0]?.message || 'Payload invalido');
+            }
+            return parsed.data;
+        })();
 
         await pool.query(
             `UPDATE users
@@ -210,7 +253,9 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
     } catch (error) {
         console.error("Error al actualizar perfil:", error);
-        res.status(500).json({ success: false, message: "Error interno" });
+        const message = error instanceof Error ? error.message : 'Error interno';
+        const isValidation = message !== 'Error interno' && message !== 'Error al actualizar perfil';
+        res.status(isValidation ? 400 : 500).json({ success: false, message: isValidation ? message : 'Error interno' });
     }
 };
 
@@ -462,7 +507,12 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
         }
 
-        const { password } = req.body;
+        const parsed = deleteAccountSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        const { password } = parsed.data;
 
         if (!password) {
             return res.status(400).json({ success: false, message: "La contraseña es obligatoria" });
@@ -513,7 +563,12 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
             return res.status(401).json({ success: false, message: "Usuario no identificado" });
         }
 
-        const { is_visible, messages_only_matches } = req.body;
+        const parsed = updatePrivacySchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        const { is_visible, messages_only_matches } = parsed.data;
 
         await pool.query(
             `UPDATE users
@@ -568,9 +623,12 @@ export const markDiscoverUserSeen = async (req: AuthRequest, res: Response) => {
             return res.status(401).json({ success: false, message: 'Usuario no identificado' });
         }
 
-        const seenUserId = Number(req.body?.seenUserId);
-        const actionRaw = String(req.body?.action || 'passed').toLowerCase();
-        const action = ['passed', 'liked', 'dismissed'].includes(actionRaw) ? actionRaw : 'passed';
+        const parsed = markSeenSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        const { seenUserId, action } = parsed.data;
 
         if (!Number.isInteger(seenUserId) || seenUserId <= 0 || seenUserId === userId) {
             return res.status(400).json({ success: false, message: 'seenUserId inválido' });
