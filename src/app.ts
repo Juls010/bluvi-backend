@@ -1,5 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();  
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import cors from 'cors';
@@ -36,12 +34,17 @@ const parseAllowedOrigins = () => {
 };
 
 const allowedOrigins = parseAllowedOrigins();
+const cloudflareEnabled = process.env.CLOUDFLARE_ENABLED === 'true';
 
 const trustProxyEnv = process.env.TRUST_PROXY;
 if (trustProxyEnv === 'true') {
   app.set('trust proxy', 1);
 } else if (trustProxyEnv && !Number.isNaN(Number(trustProxyEnv))) {
   app.set('trust proxy', Number(trustProxyEnv));
+} else if (cloudflareEnabled) {
+  // Cloudflare forwards the real client IP via CF-Connecting-IP.
+  // trust proxy allows Express to resolve req.ip correctly behind edge proxies.
+  app.set('trust proxy', 1);
 }
 
 // Rate limiter configuration from environment variables with sensible defaults

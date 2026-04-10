@@ -3,9 +3,22 @@ import { AuthRequest } from '../middlewares/authMiddleware';
 import { Response } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
+import { cacheConfig, cacheDeleteByPrefix, cacheGetJson, cacheSetJson } from '../services/cache';
 
 let matchTableReadyPromise: Promise<void> | null = null;
 let discoverySeenTableReadyPromise: Promise<void> | null = null;
+
+const buildExploreCacheKey = (userId: number, query: Record<string, unknown>) => {
+    const normalizedEntries = Object.entries(query)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => [key, String(value ?? '')]);
+
+    return `explore:user:${userId}:${JSON.stringify(normalizedEntries)}`;
+};
+
+const invalidateUserExploreCache = async (userId: number) => {
+    await cacheDeleteByPrefix(`explore:user:${userId}:`);
+};
 
 const dataUriOrHttpUrl = /^(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+|https?:\/\/\S+)$/;
 
@@ -249,6 +262,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         }
 
         const result = await pool.query(PROFILE_QUERY, [userId]);
+        await invalidateUserExploreCache(userId);
         res.status(200).json({ success: true, user: result.rows[0] });
 
     } catch (error) {
@@ -268,6 +282,20 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         const userId = req.user?.sub;
         if (!userId) {
             return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const exploreCacheKey = buildExploreCacheKey(userId, req.query as Record<string, unknown>);
+        const cachedExplore = await cacheGetJson<{
+            success: boolean;
+            count: number;
+            users: unknown[];
+            hasMore: boolean;
+            nextCursor: number | null;
+            limit: number;
+        }>(exploreCacheKey);
+
+        if (cachedExplore) {
+            return res.status(200).json(cachedExplore);
         }
 
         const currentProfileResult = await pool.query(
@@ -482,14 +510,17 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         const users = hasMore ? result.rows.slice(0, pageSize) : result.rows;
         const nextCursor = hasMore && users.length > 0 ? users[users.length - 1].id_user : null;
 
-        res.status(200).json({
+        const payload = {
             success: true,
             count: users.length,
             users,
             hasMore,
             nextCursor,
             limit: pageSize,
-        });
+        };
+
+        await cacheSetJson(exploreCacheKey, payload, cacheConfig.exploreTtlSeconds);
+        res.status(200).json(payload);
 
     } catch (error) {
         console.error("Error en explorar:", error);
@@ -543,6 +574,8 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
 
         await client.query('COMMIT');
 
+        await invalidateUserExploreCache(userId);
+
         res.status(200).json({ success: true, message: "Cuenta eliminada correctamente" });
 
     } catch (error) {
@@ -578,6 +611,8 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
             WHERE id_user = $3`,
             [is_visible ?? null, messages_only_matches ?? null, userId]
         );
+
+        await invalidateUserExploreCache(userId);
 
         const result = await pool.query(
             'SELECT is_visible, messages_only_matches FROM users WHERE id_user = $1',
@@ -643,6 +678,8 @@ export const markDiscoverUserSeen = async (req: AuthRequest, res: Response) => {
             `,
             [userId, seenUserId, action]
         );
+
+        await invalidateUserExploreCache(userId);
 
         return res.status(200).json({ success: true });
     } catch (error) {

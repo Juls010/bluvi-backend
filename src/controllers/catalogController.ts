@@ -1,8 +1,15 @@
 import { Request, Response } from 'express';
 import { pool } from '../config/db'; 
+import { cacheConfig, cacheGetJson, cacheSetJson } from '../services/cache';
+
+const REGISTER_METADATA_CACHE_KEY = 'register:metadata:v1';
 
 export const getRegisterMetadata = async (req: Request, res: Response) => {
     try {
+        const cached = await cacheGetJson<{ success: boolean; data: unknown }>(REGISTER_METADATA_CACHE_KEY);
+        if (cached) {
+            return res.json(cached);
+        }
         
         const [interests, neuros, sexualities, genders, communications] = await Promise.all([
             pool.query('SELECT id_interest AS id, name FROM interest ORDER BY name ASC'),
@@ -18,7 +25,7 @@ export const getRegisterMetadata = async (req: Request, res: Response) => {
         console.log("- Preferencias:", sexualities.rowCount);
         console.log("- Géneros:", genders.rowCount);
 
-        res.json({
+        const payload = {
             success: true,
             data: {
                 interests: interests.rows,
@@ -27,7 +34,10 @@ export const getRegisterMetadata = async (req: Request, res: Response) => {
                 genders: genders.rows,
                 communicationStyles: communications.rows
             }
-        });
+        };
+
+        await cacheSetJson(REGISTER_METADATA_CACHE_KEY, payload, cacheConfig.registerMetadataTtlSeconds);
+        res.json(payload);
     } catch (error) {
         console.error("Error en getRegisterMetadata:", error);
         res.status(500).json({ 

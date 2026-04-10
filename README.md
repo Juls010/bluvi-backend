@@ -32,6 +32,13 @@ Esta es la API REST que sustenta la plataforma **Bluvi**. Está diseñada bajo u
     - `JWT_ACCESS_SECRET` y `JWT_REFRESH_SECRET`: secretos largos y diferentes.
     - `ALLOWED_ORIGINS`: lista de orígenes frontend separados por coma.
     - `TRUST_PROXY=true`: si despliegas detrás de Nginx/Render/Railway/Cloudflare.
+    - `CLOUDFLARE_ENABLED=true`: activa fallback de proxy confiable para edge de Cloudflare.
+        - `REDIS_URL=redis://...`: habilita caché distribuida con Redis (cliente TCP nativo).
+        - `REDIS_REST_URL` y `REDIS_REST_TOKEN`: alternativa REST (por ejemplo Upstash).
+            También se aceptan `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN`.
+    - `REDIS_DEFAULT_TTL_SECONDS=60`: TTL por defecto para entradas de caché.
+    - `CACHE_REGISTER_METADATA_TTL_SECONDS=3600`: TTL para metadata de registro.
+    - `CACHE_EXPLORE_TTL_SECONDS=30`: TTL para listados de descubrimiento.
 
 ## Gestión de Base de Datos (Docker)
 
@@ -63,6 +70,22 @@ Si más adelante migras la base de datos a Supabase, solo tendrás que cambiar `
 - Rate limiting global y estricto en rutas de autenticación.
 - Validación de payloads con `zod` antes de tocar base de datos.
 - Cookies de refresh token `httpOnly` y `secure` en producción.
+
+## Redis (caché de alta disponibilidad)
+
+- El backend usa Redis de forma opcional: si `REDIS_URL` no está configurada, sigue funcionando sin caché.
+- Endpoints cacheados:
+    - `GET /api/auth/metadata`
+    - `GET /api/users/explore`
+- Invalida caché de discovery del usuario cuando actualiza perfil, privacidad o marca perfiles vistos.
+
+## Cloudflare (SSL + capa de seguridad)
+
+- Configura tu dominio en Cloudflare con SSL/TLS en modo `Full (strict)`.
+- Activa `Always Use HTTPS` y `Automatic HTTPS Rewrites`.
+- Recomendado: habilitar WAF Managed Rules y Rate Limiting en rutas sensibles (`/api/auth/*`).
+- El backend ya toma IP real desde `CF-Connecting-IP` y `X-Forwarded-For` para rate limit fiable.
+- Mantén `TRUST_PROXY=true` o `CLOUDFLARE_ENABLED=true` cuando estés detrás de Cloudflare.
 
 
 

@@ -67,6 +67,19 @@ const cleanupBuckets = () => {
 setInterval(cleanupBuckets, 60_000).unref();
 
 export const getClientIp = (req: Request) => {
+    const cfIp = req.header('cf-connecting-ip');
+    if (cfIp) {
+        return cfIp.trim().replace(/^::ffff:/, '');
+    }
+
+    const forwardedFor = req.header('x-forwarded-for');
+    if (forwardedFor) {
+        const firstIp = forwardedFor.split(',')[0]?.trim();
+        if (firstIp) {
+            return firstIp.replace(/^::ffff:/, '');
+        }
+    }
+
     // Express resolves req.ip safely when trust proxy is configured.
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     return ip.replace(/^::ffff:/, '');

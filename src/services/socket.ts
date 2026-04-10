@@ -3,7 +3,7 @@ import type { Server as HttpServer } from 'http';
 import { verifyAccessToken } from './jwt';
 
 let io: Server | null = null;
-const connectedUsers = new Map<number, string>(); // userId -> socketId
+const connectedUsers = new Map<number, Set<string>>(); // userId -> socketIds
 
 export const initSocket = (httpServer: HttpServer) => {
     io = new Server(httpServer, {
@@ -31,10 +31,16 @@ export const initSocket = (httpServer: HttpServer) => {
         const userId = socket.data.userId;
         if (userId) {
             socket.join(`user:${userId}`);
-            connectedUsers.set(userId, socket.id);
-            
-            // Notificar a todos que este usuario se conectó
-            io?.emit('user:online', { userId, timestamp: new Date().toISOString() });
+
+            const userSockets = connectedUsers.get(userId) ?? new Set<string>();
+            const wasOffline = userSockets.size === 0;
+            userSockets.add(socket.id);
+            connectedUsers.set(userId, userSockets);
+
+            // Notificar online solo cuando pasa de 0 -> 1 conexiones activas
+            if (wasOffline) {
+                io?.emit('user:online', { userId, timestamp: new Date().toISOString() });
+            }
         }
 
         socket.on('chat:typing', (payload: { toUserId?: number; chatUserId?: number; isTyping?: boolean }) => {
@@ -65,9 +71,20 @@ export const initSocket = (httpServer: HttpServer) => {
 
         socket.on('disconnect', () => {
             if (userId) {
-                connectedUsers.delete(userId);
-                // Notificar a todos que este usuario se desconectó
-                io?.emit('user:offline', { userId, timestamp: new Date().toISOString() });
+                const userSockets = connectedUsers.get(userId);
+                if (!userSockets) {
+                    return;
+                }
+
+                userSockets.delete(socket.id);
+
+                if (userSockets.size === 0) {
+                    connectedUsers.delete(userId);
+                    // Notificar offline solo cuando se cierra la ultima conexion
+                    io?.emit('user:offline', { userId, timestamp: new Date().toISOString() });
+                } else {
+                    connectedUsers.set(userId, userSockets);
+                }
             }
         });
     });
@@ -81,7 +98,7 @@ export const emitToUser = (userId: number, event: string, payload: unknown) => {
 };
 
 export const isUserOnline = (userId: number): boolean => {
-    return connectedUsers.has(userId);
+    return (connectedUsers.get(userId)?.size ?? 0) > 0;
 };
 
 export const getConnectedUsers = (): number[] => {
