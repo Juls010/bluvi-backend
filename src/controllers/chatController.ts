@@ -471,9 +471,43 @@ export const checkUserOnlineStatus = async (req: AuthRequest, res: Response) => 
             return res.status(403).json({ success: false, message: 'No existe un match activo para este chat' });
         }
 
+        await pool.query(`
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS show_online_status BOOLEAN NOT NULL DEFAULT true
+        `);
+
+        const preferenceResult = await pool.query(
+            `
+                SELECT show_online_status
+                FROM users
+                WHERE id_user = $1
+                LIMIT 1
+            `,
+            [otherUserId]
+        );
+
+        if (preferenceResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+        }
+
+        const showOnlineStatus = Boolean(preferenceResult.rows[0]?.show_online_status);
+        if (!showOnlineStatus) {
+            return res.status(200).json({
+                success: true,
+                isOnline: false,
+                canShowOnlineStatus: false,
+                userId: otherUserId,
+            });
+        }
+
         const isOnline = isUserOnline(otherUserId);
 
-        return res.status(200).json({ success: true, isOnline, userId: otherUserId });
+        return res.status(200).json({
+            success: true,
+            isOnline,
+            canShowOnlineStatus: true,
+            userId: otherUserId,
+        });
     } catch (error) {
         console.error('Error en checkUserOnlineStatus:', error);
         return res.status(500).json({ success: false, message: 'Error al verificar estado de usuario' });

@@ -14,6 +14,7 @@ const respondSchema = z.object({
 });
 
 let schemaReadyPromise: Promise<void> | null = null;
+let chatArtifactsReadyPromise: Promise<void> | null = null;
 
 const ensureMatchSchema = async () => {
     if (!schemaReadyPromise) {
@@ -38,6 +39,42 @@ const ensureMatchSchema = async () => {
     }
 
     await schemaReadyPromise;
+};
+
+const ensureChatArtifacts = async () => {
+    if (!chatArtifactsReadyPromise) {
+        chatArtifactsReadyPromise = (async () => {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS chat (
+                    id_chat SERIAL PRIMARY KEY,
+                    id_user1 INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    id_user2 INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    start_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT no_self_chat CHECK (id_user1 <> id_user2)
+                )
+            `);
+
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_pair_unique ON chat (LEAST(id_user1, id_user2), GREATEST(id_user1, id_user2))');
+        })();
+    }
+
+    await chatArtifactsReadyPromise;
+};
+
+const ensureChatExists = async (userA: number, userB: number) => {
+    await ensureChatArtifacts();
+
+    const firstUser = Math.min(userA, userB);
+    const secondUser = Math.max(userA, userB);
+
+    await pool.query(
+        `
+            INSERT INTO chat (id_user1, id_user2, start_date)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT DO NOTHING
+        `,
+        [firstUser, secondUser]
+    );
 };
 
 export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
@@ -116,6 +153,8 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
                 `,
                 [opposite.id_request]
             );
+
+            await ensureChatExists(userId, targetUserId);
 
             emitToUser(targetUserId, 'match:accepted', { userId });
             emitToUser(userId, 'match:accepted', { userId: targetUserId });
@@ -220,6 +259,8 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
 
             const requesterId = counterpart.rows[0]?.requester_id;
             if (requesterId) {
+                await ensureChatExists(userId, requesterId);
+
                 emitToUser(requesterId, 'match:accepted', { userId });
                 emitToUser(userId, 'match:accepted', { userId: requesterId });
             }

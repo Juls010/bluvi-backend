@@ -7,6 +7,8 @@ import { cacheConfig, cacheDeleteByPrefix, cacheGetJson, cacheSetJson } from '..
 
 let matchTableReadyPromise: Promise<void> | null = null;
 let discoverySeenTableReadyPromise: Promise<void> | null = null;
+let accessibilityPrefsReadyPromise: Promise<void> | null = null;
+let privacyColumnsReadyPromise: Promise<void> | null = null;
 
 const buildExploreCacheKey = (userId: number, query: Record<string, unknown>) => {
     const normalizedEntries = Object.entries(query)
@@ -46,8 +48,19 @@ const updatePrivacySchema = z
     .object({
         is_visible: z.boolean().optional(),
         messages_only_matches: z.boolean().optional(),
+        show_online_status: z.boolean().optional(),
     })
-    .refine((body) => body.is_visible !== undefined || body.messages_only_matches !== undefined, {
+    .refine((body) => body.is_visible !== undefined || body.messages_only_matches !== undefined || body.show_online_status !== undefined, {
+        message: 'Debes enviar al menos un campo para actualizar',
+    });
+
+const updateAccessibilitySchema = z
+    .object({
+        contrast: z.enum(['normal', 'high']).optional(),
+        reduce_motion: z.boolean().optional(),
+        font_size: z.enum(['normal', 'large', 'xlarge']).optional(),
+    })
+    .refine((body) => body.contrast !== undefined || body.reduce_motion !== undefined || body.font_size !== undefined, {
         message: 'Debes enviar al menos un campo para actualizar',
     });
 
@@ -98,6 +111,19 @@ const ensureDiscoverySeenTable = async () => {
     }
 
     await discoverySeenTableReadyPromise;
+};
+
+const ensurePrivacyColumns = async () => {
+    if (!privacyColumnsReadyPromise) {
+        privacyColumnsReadyPromise = (async () => {
+            await pool.query(`
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS show_online_status BOOLEAN NOT NULL DEFAULT true
+            `);
+        })();
+    }
+
+    await privacyColumnsReadyPromise;
 };
 
 // ─── Query reutilizable ───────────────────────────────────────────────────────
@@ -590,6 +616,8 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
 
 export const updatePrivacy = async (req: AuthRequest, res: Response) => {
     try {
+        await ensurePrivacyColumns();
+
         const userId = req.user?.sub;
 
         if (!userId) {
@@ -601,21 +629,22 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
         }
 
-        const { is_visible, messages_only_matches } = parsed.data;
+        const { is_visible, messages_only_matches, show_online_status } = parsed.data;
 
         await pool.query(
             `UPDATE users
             SET
                 is_visible             = COALESCE($1, is_visible),
-                messages_only_matches  = COALESCE($2, messages_only_matches)
-            WHERE id_user = $3`,
-            [is_visible ?? null, messages_only_matches ?? null, userId]
+                messages_only_matches  = COALESCE($2, messages_only_matches),
+                show_online_status     = COALESCE($3, show_online_status)
+            WHERE id_user = $4`,
+            [is_visible ?? null, messages_only_matches ?? null, show_online_status ?? null, userId]
         );
 
         await invalidateUserExploreCache(userId);
 
         const result = await pool.query(
-            'SELECT is_visible, messages_only_matches FROM users WHERE id_user = $1',
+            'SELECT is_visible, messages_only_matches, show_online_status FROM users WHERE id_user = $1',
             [userId]
         );
 
@@ -630,6 +659,8 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
 
 export const getPrivacy = async (req: AuthRequest, res: Response) => {
     try {
+        await ensurePrivacyColumns();
+
         const userId = req.user?.sub;
 
         if (!userId) {
@@ -637,7 +668,7 @@ export const getPrivacy = async (req: AuthRequest, res: Response) => {
         }
 
         const result = await pool.query(
-            'SELECT is_visible, messages_only_matches FROM users WHERE id_user = $1',
+            'SELECT is_visible, messages_only_matches, show_online_status FROM users WHERE id_user = $1',
             [userId]
         );
 
@@ -819,5 +850,113 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error('Error en getUserProfile:', error);
         return res.status(500).json({ success: false, message: 'Error al obtener perfil' });
+    }
+};
+
+const ensureAccessibilityPrefsTable = async () => {
+    if (!accessibilityPrefsReadyPromise) {
+        accessibilityPrefsReadyPromise = (async () => {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS user_accessibility_preferences (
+                    id_user INTEGER PRIMARY KEY REFERENCES users(id_user) ON DELETE CASCADE,
+                    contrast VARCHAR(10) NOT NULL DEFAULT 'normal' CHECK (contrast IN ('normal', 'high')),
+                    reduce_motion BOOLEAN NOT NULL DEFAULT false,
+                    font_size VARCHAR(10) NOT NULL DEFAULT 'normal' CHECK (font_size IN ('normal', 'large', 'xlarge')),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            `);
+        })();
+    }
+
+    await accessibilityPrefsReadyPromise;
+};
+
+export const getAccessibilityPreferences = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureAccessibilityPrefsTable();
+
+        const userId = req.user?.sub;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        await pool.query(
+            `
+                INSERT INTO user_accessibility_preferences (id_user)
+                VALUES ($1)
+                ON CONFLICT (id_user) DO NOTHING
+            `,
+            [userId]
+        );
+
+        const result = await pool.query(
+            `
+                SELECT contrast, reduce_motion, font_size
+                FROM user_accessibility_preferences
+                WHERE id_user = $1
+            `,
+            [userId]
+        );
+
+        return res.status(200).json({ success: true, accessibility: result.rows[0] });
+    } catch (error) {
+        console.error('Error al obtener accesibilidad:', error);
+        return res.status(500).json({ success: false, message: 'Error interno' });
+    }
+};
+
+export const updateAccessibilityPreferences = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureAccessibilityPrefsTable();
+
+        const userId = req.user?.sub;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const parsed = updateAccessibilitySchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Payload invalido' });
+        }
+
+        await pool.query(
+            `
+                INSERT INTO user_accessibility_preferences (id_user)
+                VALUES ($1)
+                ON CONFLICT (id_user) DO NOTHING
+            `,
+            [userId]
+        );
+
+        const { contrast, reduce_motion, font_size } = parsed.data;
+
+        await pool.query(
+            `
+                UPDATE user_accessibility_preferences
+                SET
+                    contrast = COALESCE($1, contrast),
+                    reduce_motion = COALESCE($2, reduce_motion),
+                    font_size = COALESCE($3, font_size),
+                    updated_at = NOW()
+                WHERE id_user = $4
+            `,
+            [contrast ?? null, reduce_motion ?? null, font_size ?? null, userId]
+        );
+
+        const result = await pool.query(
+            `
+                SELECT contrast, reduce_motion, font_size
+                FROM user_accessibility_preferences
+                WHERE id_user = $1
+            `,
+            [userId]
+        );
+
+        return res.status(200).json({ success: true, accessibility: result.rows[0] });
+    } catch (error) {
+        console.error('Error al actualizar accesibilidad:', error);
+        return res.status(500).json({ success: false, message: 'Error interno' });
     }
 };
