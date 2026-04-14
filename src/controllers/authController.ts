@@ -40,6 +40,7 @@ const EMAIL_GUARD_OPTIONS = {
 };
 
 const dataUriOrHttpUrl = /^(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+|https?:\/\/\S+)$/;
+const PERSON_NAME_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]+$/;
 
 const checkEmailSchema = z.object({
     email: z.string().trim().email().max(254),
@@ -58,8 +59,8 @@ const verifyEmailSchema = z.object({
 const registerSchema = z.object({
     email: z.string().trim().email().max(254),
     password: z.string().min(8).max(72),
-    first_name: z.string().trim().min(1).max(80),
-    last_name: z.string().trim().min(1).max(80),
+    first_name: z.string().trim().min(1).max(80).regex(PERSON_NAME_REGEX, 'Nombre invalido. Solo letras y espacios.'),
+    last_name: z.string().trim().min(1).max(80).regex(PERSON_NAME_REGEX, 'Apellido invalido. Solo letras y espacios.'),
     birth_date: z.string().trim().min(1),
     id_gender: z.coerce.number().int().positive(),
     id_preference: z.coerce.number().int().positive(),
