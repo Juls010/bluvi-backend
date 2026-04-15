@@ -26,7 +26,7 @@ const envInt = (value: string | undefined, fallback: number, min = 1) => {
     return parsed;
 };
 
-// Login brute-force protection configuration from environment variables
+// Login brute-force 
 const LOGIN_GUARD_OPTIONS = {
     windowMs: envInt(process.env.LOGIN_GUARD_WINDOW_MS, 15 * 60 * 1000),
     maxAttempts: envInt(process.env.LOGIN_GUARD_MAX_ATTEMPTS, 5),
@@ -269,6 +269,15 @@ export const registerStep = async (req: Request, res: Response) => {
     } catch (error: any) {
         await client.query('ROLLBACK');
         console.error("Error en registro:", error);
+        
+        // Manejo de error de email duplicado (Unique Constraint Violation en Postgres)
+        if (error.code === '23505') {
+            return res.status(409).json({ 
+                success: false, 
+                message: "Este email ya está registrado. Prueba con otro o inicia sesión." 
+            });
+        }
+
         res.status(500).json({ success: false, message: error.message || "Error en el servidor" });
     } finally {
         client.release();

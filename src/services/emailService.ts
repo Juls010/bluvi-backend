@@ -1,9 +1,9 @@
 import nodemailer from 'nodemailer';
 
 const transporter = nodemailer.createTransport({
-    host: "smtp.ethereal.email", 
-    port: 587,
-    secure: false, 
+    host: "smtp.zoho.eu",
+    port: 465,
+    secure: true, // true para 465, false para 587 (TLS)
     auth: {
         user: process.env.EMAIL_USER, 
         pass: process.env.EMAIL_PASS, 
@@ -19,7 +19,7 @@ export const sendVerificationEmail = async (to: string, code: string) => {
         
     try {
         const info = await transporter.sendMail({
-        from: '"Bluvi Team 🌊" <no-reply@bluvi.com>',
+        from: '"Bluvi Team" <${process.env.EMAIL_USER}>',
         to: to,
         subject: "Tu código de verificación de Bluvi",
         html: `
