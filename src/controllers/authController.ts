@@ -15,6 +15,7 @@ import {
     registerEmailFailure,
     registerLoginFailure,
 } from '../middlewares/rateLimit';
+import { cacheSetJson } from '../services/cache';
 
 const SALT_ROUNDS = 10;
 
@@ -123,12 +124,13 @@ export const checkEmail = async (req: Request, res: Response) => {
 
         const { email } = parsed.data;
 
-        const result = await pool.query('SELECT id_user FROM users WHERE email = $1', [email]);
-        
+        const result = await pool.query('SELECT is_verified FROM users WHERE email = $1', [email]);
         if (result.rows.length > 0) {
-            return res.status(409).json({ exists: true, message: "El email ya está registrado" });
+            if (result.rows[0].is_verified) {
+                return res.status(409).json({ exists: true, message: "El email ya está registrado" });
+            }
+            // Si existe pero no está verificado, permitir registro
         }
-        
         return res.status(200).json({ exists: false, message: "Email disponible" });
     } catch (error) {
         console.error("Error en checkEmail:", error);
@@ -140,6 +142,7 @@ export const registerStep = async (req: Request, res: Response) => {
         console.log("Datos recibidos en el Back:", req.body);
         const client = await pool.connect();
         
+
         try {
             const parsed = registerSchema.safeParse(req.body);
             if (!parsed.success) {
@@ -165,18 +168,31 @@ export const registerStep = async (req: Request, res: Response) => {
                 photos 
             } = parsed.data;
 
-            const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-            const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-            
+
+            // Iniciar transacción antes de borrar y registrar
             await client.query('BEGIN');
+
+            // Si existe un usuario no verificado con este email, lo eliminamos antes de registrar
+            const existingUser = await client.query('SELECT id_user FROM users WHERE email = $1 AND is_verified = false', [email.toLowerCase().trim()]);
+            if (existingUser.rows.length > 0) {
+                const userIdToDelete = existingUser.rows[0].id_user;
+                await client.query('DELETE FROM photo WHERE id_user = $1', [userIdToDelete]);
+                await client.query('DELETE FROM user_interest WHERE id_user = $1', [userIdToDelete]);
+                await client.query('DELETE FROM user_feature WHERE id_user = $1', [userIdToDelete]);
+                await client.query('DELETE FROM user_communication_style WHERE id_user = $1', [userIdToDelete]);
+                await client.query('DELETE FROM user_preference WHERE id_user = $1', [userIdToDelete]);
+                await client.query('DELETE FROM users WHERE id_user = $1', [userIdToDelete]);
+            }
+
+            const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+            await cacheSetJson(`verify:${email.toLowerCase().trim()}`, verificationCode, 900);
 
         const userQuery = `
             INSERT INTO users (
                 email, password, first_name, last_name, birth_date, 
-                id_gender, id_preference, city, description,
-                verification_code, code_expires_at, is_verified, role
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                id_gender, id_preference, city, description,is_verified, role
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id_user
         `;
 
@@ -189,9 +205,7 @@ export const registerStep = async (req: Request, res: Response) => {
             id_gender, 
             id_preference, 
             city, 
-            description,
-            verificationCode, 
-            expiresAt, 
+            description, 
             false, 
             'user'
         ];
@@ -402,33 +416,29 @@ export const verifyEmail = async (req: Request, res: Response) => {
         }
 
         const { email, code } = parsed.data;
-        const result = await pool.query(
-            'SELECT * FROM users WHERE email = $1 AND verification_code = $2',
-            [email, code]
-        );
+        // Buscar usuario solo por email
+        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         const user = result.rows[0];
+        if (!user) return res.status(401).json({ success: false, message: "Usuario no encontrado" });
 
-        if (!user) return res.status(401).json({ success: false, message: "Código inválido" });
-        
-        // ... (check de expiración igual)
+        // Obtener el código de verificación de Redis
+        const { cacheGetJson } = await import('../services/cache.js');
+        const codeInCache = await cacheGetJson(`verify:${email.toLowerCase().trim()}`);
+        if (!codeInCache || codeInCache !== code) {
+            return res.status(401).json({ success: false, message: "Código inválido" });
+        }
 
-        await pool.query(
-            'UPDATE users SET is_verified = true, verification_code = NULL, code_expires_at = NULL WHERE id_user = $1',
-            [user.id_user]
-        );
+        // Marcar usuario como verificado
+        await pool.query('UPDATE users SET is_verified = true WHERE id_user = $1', [user.id_user]);
 
         const { accessToken, refreshToken } = generateTokens(user);
-
-        // TAMBIÉN USAMOS cookieOptions AQUÍ
         res.cookie('refreshToken', refreshToken, cookieOptions);
-
         res.status(200).json({
             success: true,
             message: "Email verificado correctamente",
             accessToken,
             user: { id: user.id_user, firstName: user.first_name, email: user.email }
         });
-
     } catch (error) {
         console.error("Verify Error:", error);
         res.status(500).json({ success: false, message: "Error interno" });
