@@ -91,7 +91,7 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
 
         const userQuery = `
             SELECT 
-                u.id_user as id, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description,
+                u.id_user as id, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.avatar_url,
                 COALESCE(json_agg(DISTINCT p.url_photo) FILTER (WHERE p.url_photo IS NOT NULL), '[]') as photos,
                 COALESCE(json_agg(DISTINCT i.name) FILTER (WHERE i.name IS NOT NULL), '[]') as interests,
                 COALESCE(json_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL), '[]') as neurodivergences
@@ -192,12 +192,14 @@ export const registerStep = async (req: Request, res: Response) => {
             const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
             await cacheSetJson(`verify:${email.toLowerCase().trim()}`, verificationCode, 900);
 
+        const avatar_url = photos && photos.length > 0 ? photos[0] : null;
+
         const userQuery = `
             INSERT INTO users (
                 email, password, first_name, last_name, birth_date, 
                 id_gender, id_preference, city, description, is_verified, role,
-                privacy_accepted_at, privacy_version
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                privacy_accepted_at, privacy_version, avatar_url
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING id_user
         `;
 
@@ -215,6 +217,7 @@ export const registerStep = async (req: Request, res: Response) => {
             'user',
             privacy_accepted_at,
             privacy_version,
+            avatar_url,
         ];
 
         const newUser = await client.query(userQuery, userValues);

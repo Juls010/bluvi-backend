@@ -130,7 +130,7 @@ const ensurePrivacyColumns = async () => {
 
 const PROFILE_QUERY = `
     SELECT 
-        u.id_user, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender,
+        u.id_user, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.avatar_url,
         
         COALESCE(
             (SELECT json_agg(up.id_preference::integer) FROM user_preference up WHERE up.id_user = u.id_user),
@@ -250,6 +250,18 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
                 await pool.query(
                     `INSERT INTO photo (id_user, url_photo) VALUES ${values}`,
                     [userId, ...validPhotos]
+                );
+                
+                // Sincronizamos la avatar_url en la tabla users
+                await pool.query(
+                    `UPDATE users SET avatar_url = $1 WHERE id_user = $2`,
+                    [validPhotos[0], userId]
+                );
+            } else {
+                // Si borra todas las fotos, limpiamos el avatar
+                await pool.query(
+                    `UPDATE users SET avatar_url = NULL WHERE id_user = $1`,
+                    [userId]
                 );
             }
         }
@@ -413,7 +425,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                 u.description, 
                 u.id_gender,      
                 u.id_preference,  
-                (SELECT url_photo FROM photo WHERE id_user = u.id_user LIMIT 1) as main_photo,
+                u.avatar_url as main_photo,
                 COALESCE(json_agg(DISTINCT i.name) FILTER (WHERE i.name IS NOT NULL), '[]') as interests,
                 COALESCE(json_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL), '[]') as features,
                 COALESCE(
@@ -761,7 +773,8 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
                     u.description,
                     u.is_visible,
                     u.messages_only_matches,
-                    u.created_at
+                    u.created_at,
+                    u.avatar_url
                 FROM users u
                 WHERE u.id_user = $1 AND u.is_verified = true
             `,
