@@ -77,6 +77,8 @@ const registerSchema = z.object({
         )
         .optional()
         .default([]),
+    privacy_accepted_at: z.string().trim().min(1, 'Debes aceptar la politica de privacidad'),
+    privacy_version: z.string().trim().min(1),
 });
 
 export const getProfile = async (req: AuthRequest, res: Response) => {
@@ -165,7 +167,9 @@ export const registerStep = async (req: Request, res: Response) => {
                 interests, 
                 neurodivergences,
                 communication_style, 
-                photos 
+                photos,
+                privacy_accepted_at,
+                privacy_version,
             } = parsed.data;
 
 
@@ -191,8 +195,9 @@ export const registerStep = async (req: Request, res: Response) => {
         const userQuery = `
             INSERT INTO users (
                 email, password, first_name, last_name, birth_date, 
-                id_gender, id_preference, city, description,is_verified, role
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                id_gender, id_preference, city, description, is_verified, role,
+                privacy_accepted_at, privacy_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING id_user
         `;
 
@@ -207,7 +212,9 @@ export const registerStep = async (req: Request, res: Response) => {
             city, 
             description, 
             false, 
-            'user'
+            'user',
+            privacy_accepted_at,
+            privacy_version,
         ];
 
         const newUser = await client.query(userQuery, userValues);
