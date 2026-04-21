@@ -69,20 +69,20 @@ const markSeenSchema = z.object({
     action: z.enum(['passed', 'liked', 'dismissed']).optional().default('passed'),
 });
 
-const ensureMatchRequestTable = async () => {
+const ensureMatchTable = async () => {
     if (!matchTableReadyPromise) {
         matchTableReadyPromise = (async () => {
             await pool.query(`
-                CREATE TABLE IF NOT EXISTS match_request (
-                    id_request SERIAL PRIMARY KEY,
-                    requester_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    target_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    icebreaker_message TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS match (
+                    id_match SERIAL PRIMARY KEY,
+                    id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    id_matched INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    message TEXT,
                     status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    responded_at TIMESTAMPTZ,
-                    CONSTRAINT uniq_match_direction UNIQUE (requester_id, target_id),
-                    CONSTRAINT no_self_match CHECK (requester_id <> target_id)
+                    updated_at TIMESTAMPTZ,
+                    CONSTRAINT uniq_match_pair UNIQUE (id_user, id_matched),
+                    CONSTRAINT no_self_match CHECK (id_user <> id_matched)
                 )
             `);
         })();
@@ -314,7 +314,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
 export const getExploreUsers = async (req: AuthRequest, res: Response) => {
     try {
-        await ensureMatchRequestTable();
+        await ensureMatchTable();
         await ensureDiscoverySeenTable();
 
         const userId = req.user?.sub;
@@ -444,19 +444,19 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                             AND u.is_verified = true
                             AND NOT EXISTS (
                                         SELECT 1
-                                        FROM match_request mr
+                                        FROM match m
                                         WHERE (
-                                                (mr.requester_id = $1 AND mr.target_id = u.id_user)
-                                                OR (mr.requester_id = u.id_user AND mr.target_id = $1)
+                                                (m.id_user = $1 AND m.id_matched = u.id_user)
+                                                OR (m.id_user = u.id_user AND m.id_matched = $1)
                                         )
-                                        AND mr.status = 'accepted'
+                                        AND m.status = 'accepted'
                             )
                             AND NOT EXISTS (
                                         SELECT 1
-                                        FROM match_request mr
-                                        WHERE mr.requester_id = $1
-                                            AND mr.target_id = u.id_user
-                                            AND mr.status = 'pending'
+                                        FROM match m
+                                        WHERE m.id_user = $1
+                                            AND m.id_matched = u.id_user
+                                            AND m.status = 'pending'
                             )
         `;
 
@@ -747,8 +747,8 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
         // Verificar que hay un match aceptado entre los dos usuarios
         const matchCheck = await pool.query(
             `
-                SELECT * FROM match_request 
-                WHERE ((requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1))
+                SELECT * FROM match 
+                WHERE ((id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1))
                   AND status = 'accepted'
                 LIMIT 1
             `,

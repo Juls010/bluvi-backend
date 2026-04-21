@@ -14,16 +14,16 @@ const ensureChatSchema = async () => {
     if (!chatSchemaReadyPromise) {
         chatSchemaReadyPromise = (async () => {
             await pool.query(`
-                CREATE TABLE IF NOT EXISTS match_request (
-                    id_request SERIAL PRIMARY KEY,
-                    requester_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    target_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    icebreaker_message TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS match (
+                    id_match SERIAL PRIMARY KEY,
+                    id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    id_matched INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    message TEXT,
                     status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    responded_at TIMESTAMPTZ,
-                    CONSTRAINT uniq_match_direction UNIQUE (requester_id, target_id),
-                    CONSTRAINT no_self_match CHECK (requester_id <> target_id)
+                    updated_at TIMESTAMPTZ,
+                    CONSTRAINT uniq_match_pair UNIQUE (id_user, id_matched),
+                    CONSTRAINT no_self_match CHECK (id_user <> id_matched)
                 )
             `);
 
@@ -73,9 +73,9 @@ const hasAcceptedMatch = async (userId: number, otherUserId: number) => {
     const matchResult = await pool.query(
         `
             SELECT 1
-            FROM match_request
+            FROM match
             WHERE status = 'accepted'
-              AND ((requester_id = $1 AND target_id = $2) OR (requester_id = $2 AND target_id = $1))
+              AND ((id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1))
             LIMIT 1
         `,
         [userId, otherUserId]

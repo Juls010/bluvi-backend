@@ -16,25 +16,25 @@ const respondSchema = z.object({
 let schemaReadyPromise: Promise<void> | null = null;
 let chatArtifactsReadyPromise: Promise<void> | null = null;
 
-const ensureMatchSchema = async () => {
+const ensureMatchTable = async () => {
     if (!schemaReadyPromise) {
         schemaReadyPromise = (async () => {
             await pool.query(`
-                CREATE TABLE IF NOT EXISTS match_request (
-                    id_request SERIAL PRIMARY KEY,
-                    requester_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    target_id INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    icebreaker_message TEXT NOT NULL,
+                CREATE TABLE IF NOT EXISTS match (
+                    id_match SERIAL PRIMARY KEY,
+                    id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    id_matched INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
+                    message TEXT,
                     status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    responded_at TIMESTAMPTZ,
-                    CONSTRAINT uniq_match_direction UNIQUE (requester_id, target_id),
-                    CONSTRAINT no_self_match CHECK (requester_id <> target_id)
+                    updated_at TIMESTAMPTZ,
+                    CONSTRAINT uniq_match_pair UNIQUE (id_user, id_matched),
+                    CONSTRAINT no_self_match CHECK (id_user <> id_matched)
                 )
             `);
 
-            await pool.query('CREATE INDEX IF NOT EXISTS idx_match_request_target_status ON match_request (target_id, status)');
-            await pool.query('CREATE INDEX IF NOT EXISTS idx_match_request_requester_status ON match_request (requester_id, status)');
+            await pool.query('CREATE INDEX IF NOT EXISTS idx_match_target_status ON match (id_matched, status)');
+            await pool.query('CREATE INDEX IF NOT EXISTS idx_match_requester_status ON match (id_user, status)');
         })();
     }
 
@@ -79,7 +79,7 @@ const ensureChatExists = async (userA: number, userB: number) => {
 
 export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
     try {
-        await ensureMatchSchema();
+        await ensureMatchTable();
 
         const userId = req.user?.sub;
         if (!userId) {
@@ -103,7 +103,7 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
         }
 
         const existingSameDirection = await pool.query(
-            `SELECT id_request, status FROM match_request WHERE requester_id = $1 AND target_id = $2`,
+            `SELECT id_match, status FROM match WHERE id_user = $1 AND id_matched = $2`,
             [userId, targetUserId]
         );
 
@@ -116,14 +116,14 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
 
             await pool.query(
                 `
-                    UPDATE match_request
-                    SET icebreaker_message = $1,
+                    UPDATE match
+                    SET message = $1,
                         status = 'pending',
                         created_at = NOW(),
-                        responded_at = NULL
-                    WHERE id_request = $2
+                        updated_at = NULL
+                    WHERE id_match = $2
                 `,
-                [icebreakerMessage, existing.id_request]
+                [icebreakerMessage, existing.id_match]
             );
 
             return res.status(200).json({ success: true, pending: true, message: 'Solicitud actualizada y reenviada' });
@@ -131,9 +131,9 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
 
         const existingOppositeDirection = await pool.query(
             `
-                SELECT id_request, status
-                FROM match_request
-                WHERE requester_id = $1 AND target_id = $2
+                SELECT id_match, status
+                FROM match
+                WHERE id_user = $1 AND id_matched = $2
             `,
             [targetUserId, userId]
         );
@@ -147,11 +147,11 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
 
             await pool.query(
                 `
-                    UPDATE match_request
-                    SET status = 'accepted', responded_at = NOW()
-                    WHERE id_request = $1
+                    UPDATE match
+                    SET status = 'accepted', updated_at = NOW()
+                    WHERE id_match = $1
                 `,
-                [opposite.id_request]
+                [opposite.id_match]
             );
 
             await ensureChatExists(userId, targetUserId);
@@ -164,7 +164,7 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
 
         await pool.query(
             `
-                INSERT INTO match_request (requester_id, target_id, icebreaker_message, status)
+                INSERT INTO match (id_user, id_matched, message, status)
                 VALUES ($1, $2, $3, 'pending')
             `,
             [userId, targetUserId, icebreakerMessage]
@@ -181,7 +181,7 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
 
 export const getIncomingRequests = async (req: AuthRequest, res: Response) => {
     try {
-        await ensureMatchSchema();
+        await ensureMatchTable();
 
         const userId = req.user?.sub;
         if (!userId) {
@@ -191,17 +191,17 @@ export const getIncomingRequests = async (req: AuthRequest, res: Response) => {
         const result = await pool.query(
             `
                 SELECT
-                    mr.id_request,
-                    mr.icebreaker_message,
-                    mr.created_at,
+                    m.id_match,
+                    m.message,
+                    m.created_at,
                     u.id_user,
                     u.first_name,
                     u.last_name,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo
-                FROM match_request mr
-                JOIN users u ON u.id_user = mr.requester_id
-                WHERE mr.target_id = $1 AND mr.status = 'pending'
-                ORDER BY mr.created_at DESC
+                FROM match m
+                JOIN users u ON u.id_user = m.id_user
+                WHERE m.id_matched = $1 AND m.status = 'pending'
+                ORDER BY m.created_at DESC
             `,
             [userId]
         );
@@ -215,7 +215,7 @@ export const getIncomingRequests = async (req: AuthRequest, res: Response) => {
 
 export const respondToMatchRequest = async (req: AuthRequest, res: Response) => {
     try {
-        await ensureMatchSchema();
+        await ensureMatchTable();
 
         const userId = req.user?.sub;
         if (!userId) {
@@ -236,13 +236,13 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
 
         const result = await pool.query(
             `
-                UPDATE match_request
+                UPDATE match
                 SET status = $1,
-                    responded_at = NOW()
-                WHERE id_request = $2
-                  AND target_id = $3
+                    updated_at = NOW()
+                WHERE id_match = $2
+                  AND id_matched = $3
                   AND status = 'pending'
-                RETURNING id_request, status
+                RETURNING id_match, status
             `,
             [status, requestId, userId]
         );
@@ -253,11 +253,11 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
 
         if (status === 'accepted') {
             const counterpart = await pool.query(
-                'SELECT requester_id FROM match_request WHERE id_request = $1',
+                'SELECT id_user FROM match WHERE id_match = $1',
                 [requestId]
             );
 
-            const requesterId = counterpart.rows[0]?.requester_id;
+            const requesterId = counterpart.rows[0]?.id_user;
             if (requesterId) {
                 await ensureChatExists(userId, requesterId);
 
@@ -280,7 +280,7 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
 
 export const getMyMatches = async (req: AuthRequest, res: Response) => {
     try {
-        await ensureMatchSchema();
+        await ensureMatchTable();
 
         const userId = req.user?.sub;
         if (!userId) {
@@ -290,19 +290,19 @@ export const getMyMatches = async (req: AuthRequest, res: Response) => {
         const result = await pool.query(
             `
                 SELECT
-                    mr.id_request,
-                    mr.created_at,
-                    mr.responded_at,
-                    mr.icebreaker_message,
-                    CASE WHEN mr.requester_id = $1 THEN mr.target_id ELSE mr.requester_id END AS id_user,
+                    m.id_match,
+                    m.created_at,
+                    m.updated_at,
+                    m.message,
+                    CASE WHEN m.id_user = $1 THEN m.id_matched ELSE m.id_user END AS id_user,
                     u.first_name,
                     u.last_name,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo
-                FROM match_request mr
-                JOIN users u ON u.id_user = CASE WHEN mr.requester_id = $1 THEN mr.target_id ELSE mr.requester_id END
-                WHERE (mr.requester_id = $1 OR mr.target_id = $1)
-                  AND mr.status = 'accepted'
-                ORDER BY COALESCE(mr.responded_at, mr.created_at) DESC
+                FROM match m
+                JOIN users u ON u.id_user = CASE WHEN m.id_user = $1 THEN m.id_matched ELSE m.id_user END
+                WHERE (m.id_user = $1 OR m.id_matched = $1)
+                  AND m.status = 'accepted'
+                ORDER BY COALESCE(m.updated_at, m.created_at) DESC
             `,
             [userId]
         );
