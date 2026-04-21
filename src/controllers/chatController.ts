@@ -14,20 +14,6 @@ const ensureChatSchema = async () => {
     if (!chatSchemaReadyPromise) {
         chatSchemaReadyPromise = (async () => {
             await pool.query(`
-                CREATE TABLE IF NOT EXISTS match (
-                    id_match SERIAL PRIMARY KEY,
-                    id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    id_matched INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
-                    message TEXT,
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ,
-                    CONSTRAINT uniq_match_pair UNIQUE (id_user, id_matched),
-                    CONSTRAINT no_self_match CHECK (id_user <> id_matched)
-                )
-            `);
-
-            await pool.query(`
                 CREATE TABLE IF NOT EXISTS chat (
                     id_chat SERIAL PRIMARY KEY,
                     id_user1 INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
@@ -180,7 +166,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                     WHERE c.id_user1 = $1 OR c.id_user2 = $1
                 )
                 SELECT
-                    ac.id_chat AS match_request_id,
+                    ac.id_chat AS chat_id,
                     u.id_user,
                     u.first_name,
                     u.last_name,
@@ -251,10 +237,10 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
         let messagesQuery = `
                 SELECT
                     m.id_message,
-                    m.id_chat AS match_request_id,
+                    m.id_chat AS chat_id,
                     m.id_sender AS sender_id,
                     CASE WHEN m.id_sender = $2 THEN $3 ELSE $2 END AS receiver_id,
-                    m.content AS body,
+                    m.content,
                     m.date_sent AS created_at,
                     NULL::timestamptz AS read_at,
                     CASE
@@ -302,7 +288,7 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
         return res.status(200).json({
             success: true,
             counterpart,
-            matchRequestId: chatId,
+            chatId,
             otherUserReadCursor,
             hasMore,
             messages,
@@ -346,10 +332,10 @@ export const sendConversationMessage = async (req: AuthRequest, res: Response) =
                 VALUES ($1, $2, $3, NOW())
                 RETURNING
                     id_message,
-                    id_chat AS match_request_id,
+                    id_chat AS chat_id,
                     id_sender AS sender_id,
                     $4::integer AS receiver_id,
-                    content AS body,
+                    content,
                     date_sent AS created_at,
                     NULL::timestamptz AS read_at
             `,

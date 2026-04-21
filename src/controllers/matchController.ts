@@ -61,20 +61,24 @@ const ensureChatArtifacts = async () => {
     await chatArtifactsReadyPromise;
 };
 
-const ensureChatExists = async (userA: number, userB: number) => {
+const ensureChatExists = async (userA: number, userB: number): Promise<number> => {
     await ensureChatArtifacts();
 
     const firstUser = Math.min(userA, userB);
     const secondUser = Math.max(userA, userB);
 
-    await pool.query(
+    const result = await pool.query(
         `
             INSERT INTO chat (id_user1, id_user2, start_date)
             VALUES ($1, $2, NOW())
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (LEAST(id_user1, id_user2), GREATEST(id_user1, id_user2)) 
+            DO UPDATE SET id_user1 = EXCLUDED.id_user1 -- No-op para obtener el ID
+            RETURNING id_chat
         `,
         [firstUser, secondUser]
     );
+
+    return result.rows[0].id_chat;
 };
 
 export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
@@ -145,21 +149,31 @@ export const sendMatchRequest = async (req: AuthRequest, res: Response) => {
                 return res.status(200).json({ success: true, alreadyMatched: true, message: 'Ya tenéis un match activo' });
             }
 
-            await pool.query(
+            const mutualResult = await pool.query(
                 `
                     UPDATE match
                     SET status = 'accepted', updated_at = NOW()
                     WHERE id_match = $1
+                    RETURNING id_match, message, id_user
                 `,
                 [opposite.id_match]
             );
 
-            await ensureChatExists(userId, targetUserId);
+            const mutualMatch = mutualResult.rows[0];
+            const chatId = await ensureChatExists(userId, targetUserId);
 
-            emitToUser(targetUserId, 'match:accepted', { userId });
-            emitToUser(userId, 'match:accepted', { userId: targetUserId });
+            // Insertar el icebreaker como primer mensaje
+            if (mutualMatch.message) {
+                await pool.query(
+                    `INSERT INTO message (id_chat, id_sender, content, date_sent) VALUES ($1, $2, $3, NOW())`,
+                    [chatId, mutualMatch.id_user, mutualMatch.message]
+                );
+            }
 
-            return res.status(200).json({ success: true, matched: true, message: '¡Match mutuo! Ya podéis hablar' });
+            emitToUser(targetUserId, 'match:accepted', { userId, chatId });
+            emitToUser(userId, 'match:accepted', { userId: targetUserId, chatId });
+
+            return res.status(200).json({ success: true, matched: true, chatId, message: '¡Match mutuo! Ya podéis hablar' });
         }
 
         await pool.query(
@@ -242,7 +256,7 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
                 WHERE id_match = $2
                   AND id_matched = $3
                   AND status = 'pending'
-                RETURNING id_match, status
+                RETURNING id_match, status, message, id_user
             `,
             [status, requestId, userId]
         );
@@ -251,19 +265,21 @@ export const respondToMatchRequest = async (req: AuthRequest, res: Response) => 
             return res.status(404).json({ success: false, message: 'Solicitud no encontrada o ya respondida' });
         }
 
+        const matchData = result.rows[0];
+
         if (status === 'accepted') {
-            const counterpart = await pool.query(
-                'SELECT id_user FROM match WHERE id_match = $1',
-                [requestId]
-            );
+            const chatId = await ensureChatExists(userId, matchData.id_user);
 
-            const requesterId = counterpart.rows[0]?.id_user;
-            if (requesterId) {
-                await ensureChatExists(userId, requesterId);
-
-                emitToUser(requesterId, 'match:accepted', { userId });
-                emitToUser(userId, 'match:accepted', { userId: requesterId });
+            // Insertar el icebreaker como primer mensaje si existe
+            if (matchData.message) {
+                await pool.query(
+                    `INSERT INTO message (id_chat, id_sender, content, date_sent) VALUES ($1, $2, $3, NOW())`,
+                    [chatId, matchData.id_user, matchData.message]
+                );
             }
+
+            emitToUser(matchData.id_user, 'match:accepted', { userId, chatId });
+            emitToUser(userId, 'match:accepted', { userId: matchData.id_user, chatId });
         }
 
         return res.status(200).json({

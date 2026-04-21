@@ -66,6 +66,8 @@ const registerSchema = z.object({
     id_gender: z.coerce.number().int().positive(),
     id_preference: z.coerce.number().int().positive(),
     city: z.string().trim().min(1).max(120),
+    city_lat: z.coerce.number().nullable().optional(),
+    city_lng: z.coerce.number().nullable().optional(),
     description: z.string().trim().min(1).max(1200),
     interests: z.array(z.coerce.number().int().positive()).max(50).optional().default([]),
     neurodivergences: z.array(z.coerce.number().int().positive()).max(50).optional().default([]),
@@ -198,8 +200,9 @@ export const registerStep = async (req: Request, res: Response) => {
             INSERT INTO users (
                 email, password, first_name, last_name, birth_date, 
                 id_gender, id_preference, city, description, is_verified, role,
-                privacy_accepted_at, privacy_version, avatar_url
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                privacy_accepted_at, privacy_version, avatar_url,
+                city_lat, city_lng
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING id_user
         `;
 
@@ -218,6 +221,8 @@ export const registerStep = async (req: Request, res: Response) => {
             privacy_accepted_at,
             privacy_version,
             avatar_url,
+            parsed.data.city_lat ?? null,
+            parsed.data.city_lng ?? null
         ];
 
         const newUser = await client.query(userQuery, userValues);

@@ -31,6 +31,8 @@ const updateProfileSchema = z.object({
     last_name: z.string().trim().min(1).max(80).optional(),
     birth_date: z.string().trim().min(1).optional(),
     city: z.string().trim().min(1).max(120).optional(),
+    city_lat: z.coerce.number().nullable().optional(),
+    city_lng: z.coerce.number().nullable().optional(),
     description: z.string().trim().min(1).max(1200).optional(),
     id_gender: z.coerce.number().int().positive().optional(),
     sexuality: intArraySchema.optional(),
@@ -226,9 +228,21 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
                 birth_date  = COALESCE($3, birth_date),
                 city        = COALESCE($4, city),
                 description = COALESCE($5, description),
-                id_gender   = COALESCE($6, id_gender)
+                id_gender   = COALESCE($6, id_gender),
+                city_lat    = CASE WHEN $8::numeric IS NOT NULL THEN $8::numeric ELSE city_lat END,
+                city_lng    = CASE WHEN $9::numeric IS NOT NULL THEN $9::numeric ELSE city_lng END
             WHERE id_user = $7`,
-            [first_name, last_name, birth_date, city, description, id_gender, userId]
+            [
+                first_name, 
+                last_name, 
+                birth_date, 
+                city, 
+                description, 
+                id_gender, 
+                userId,
+                req.body.city_lat !== undefined ? req.body.city_lat : null,
+                req.body.city_lng !== undefined ? req.body.city_lng : null
+            ]
         );
 
         if (Array.isArray(sexuality)) {
@@ -342,7 +356,9 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                 COALESCE(
                     (SELECT up.id_preference FROM user_preference up WHERE up.id_user = u.id_user LIMIT 1),
                     u.id_preference::integer
-                )::integer AS id_preference
+                )::integer AS id_preference,
+                u.city_lat,
+                u.city_lng
              FROM users u
              WHERE u.id_user = $1`,
             [userId]
@@ -351,12 +367,16 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
         const currentProfile = currentProfileResult.rows[0];
         const currentGender = Number(currentProfile?.id_gender);
         const currentPreference = Number(currentProfile?.id_preference);
-        const { city, feature, sensory, search, interests, communicationStyle, cursor, limit, excludeSeen } = req.query;
+        const currentUserLat = currentProfile?.city_lat ? Number(currentProfile.city_lat) : null;
+        const currentUserLng = currentProfile?.city_lng ? Number(currentProfile.city_lng) : null;
+
+        const { city, distance, feature, sensory, search, interests, communicationStyle, cursor, limit, excludeSeen } = req.query;
 
         const parsedCursor = Number(cursor);
         const parsedLimit = Number(limit);
         const cursorValue = Number.isInteger(parsedCursor) && parsedCursor > 0 ? parsedCursor : null;
         const pageSize = Number.isInteger(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 50) : 20;
+        const maxDistance = Number(distance);
         const shouldExcludeSeen = String(excludeSeen ?? 'true').toLowerCase() !== 'false';
 
         const toArray = (value: unknown): string[] => {
@@ -449,14 +469,6 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                                                 (m.id_user = $1 AND m.id_matched = u.id_user)
                                                 OR (m.id_user = u.id_user AND m.id_matched = $1)
                                         )
-                                        AND m.status = 'accepted'
-                            )
-                            AND NOT EXISTS (
-                                        SELECT 1
-                                        FROM match m
-                                        WHERE m.id_user = $1
-                                            AND m.id_matched = u.id_user
-                                            AND m.status = 'pending'
                             )
         `;
 
@@ -482,14 +494,42 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
+        if (maxDistance > 0 && currentUserLat !== null && currentUserLng !== null) {
+            queryText += ` AND (
+                6371 * acos(
+                    cos(radians($${paramCount})) * cos(radians(u.city_lat)) * 
+                    cos(radians(u.city_lng) - radians($${paramCount + 1})) + 
+                    sin(radians($${paramCount})) * sin(radians(u.city_lat))
+                )
+            ) <= $${paramCount + 2}`;
+            queryParams.push(currentUserLat, currentUserLng, maxDistance);
+            paramCount += 3;
+        }
+
         if (feature) {
-            queryText += ` AND f.name = $${paramCount}`;
+            queryText += `
+                AND EXISTS (
+                    SELECT 1
+                    FROM user_feature uf2
+                    JOIN feature f2 ON uf2.id_feature = f2.id_feature
+                    WHERE uf2.id_user = u.id_user
+                    AND f2.name = $${paramCount}
+                )
+            `;
             queryParams.push(feature);
             paramCount++;
         }
 
         if (sensoryFilters.length > 0) {
-            queryText += ` AND LOWER(f.name) = ANY($${paramCount}::text[])`;
+            queryText += `
+                AND EXISTS (
+                    SELECT 1
+                    FROM user_feature uf3
+                    JOIN feature f3 ON uf3.id_feature = f3.id_feature
+                    WHERE uf3.id_user = u.id_user
+                    AND LOWER(f3.name) = ANY($${paramCount}::text[])
+                )
+            `;
             queryParams.push(sensoryFilters);
             paramCount++;
         }
@@ -539,7 +579,21 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
-        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference ORDER BY u.id_user DESC LIMIT $${paramCount}`;
+        if (maxDistance > 0 && currentUserLat !== null && currentUserLng !== null) {
+            queryText += ` ORDER BY (
+                6371 * acos(
+                    cos(radians($${paramCount})) * cos(radians(u.city_lat)) * 
+                    cos(radians(u.city_lng) - radians($${paramCount + 1})) + 
+                    sin(radians($${paramCount})) * sin(radians(u.city_lat))
+                )
+            ) ASC, u.id_user DESC`;
+            queryParams.push(currentUserLat, currentUserLng);
+            paramCount += 2;
+        } else {
+            queryText += ` ORDER BY u.id_user DESC`;
+        }
+
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference LIMIT $${paramCount}`;
         queryParams.push(pageSize + 1);
 
         const result = await pool.query(queryText, queryParams);
