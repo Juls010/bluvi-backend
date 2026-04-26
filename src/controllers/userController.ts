@@ -579,6 +579,8 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference, u.avatar_url, u.city_lat, u.city_lng`;
+
         if (maxDistance > 0 && currentUserLat !== null && currentUserLng !== null) {
             queryText += ` ORDER BY (
                 6371 * acos(
@@ -593,7 +595,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             queryText += ` ORDER BY u.id_user DESC`;
         }
 
-        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference LIMIT $${paramCount}`;
+        queryText += ` LIMIT $${paramCount}`;
         queryParams.push(pageSize + 1);
 
         const result = await pool.query(queryText, queryParams);
