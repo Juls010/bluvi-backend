@@ -41,6 +41,9 @@ export const initSocket = (httpServer: HttpServer) => {
             if (wasOffline) {
                 io?.emit('user:online', { userId, timestamp: new Date().toISOString() });
             }
+
+            // Enviar lista de usuarios online al que se acaba de conectar
+            socket.emit('user:status:initial', { onlineUserIds: getConnectedUsers() });
         }
 
         socket.on('chat:typing', (payload: { toUserId?: number; chatUserId?: number; isTyping?: boolean }) => {

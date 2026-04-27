@@ -38,9 +38,20 @@ const ensureChatSchema = async () => {
                     id_chat INTEGER NOT NULL REFERENCES chat(id_chat) ON DELETE CASCADE,
                     id_user INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
                     last_read_message_id INTEGER,
+                    last_delivered_message_id INTEGER,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (id_chat, id_user)
                 )
+            `);
+
+            await pool.query(`
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='chat_read_state' AND column_name='last_delivered_message_id') THEN
+                        ALTER TABLE chat_read_state ADD COLUMN last_delivered_message_id INTEGER;
+                    END IF;
+                END $$;
             `);
 
             await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_pair_unique ON chat (LEAST(id_user1, id_user2), GREATEST(id_user1, id_user2))');
@@ -135,7 +146,9 @@ const getCounterpart = async (otherUserId: number) => {
 const getReadCursor = async (chatId: number, userId: number) => {
     const result = await pool.query(
         `
-            SELECT COALESCE(last_read_message_id, 0)::int AS last_read_message_id
+            SELECT 
+                COALESCE(last_read_message_id, 0)::int AS last_read_message_id,
+                COALESCE(last_delivered_message_id, 0)::int AS last_delivered_message_id
             FROM chat_read_state
             WHERE id_chat = $1 AND id_user = $2
             LIMIT 1
@@ -143,7 +156,10 @@ const getReadCursor = async (chatId: number, userId: number) => {
         [chatId, userId]
     );
 
-    return Number(result.rows[0]?.last_read_message_id || 0);
+    return {
+        read: Number(result.rows[0]?.last_read_message_id || 0),
+        delivered: Number(result.rows[0]?.last_delivered_message_id || 0)
+    };
 };
 
 export const getConversations = async (req: AuthRequest, res: Response) => {
@@ -171,9 +187,18 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                     u.first_name,
                     u.last_name,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo,
+                    lm.id_message AS last_message_id,
                     lm.content AS last_message,
                     lm.date_sent AS last_message_at,
                     lm.id_sender AS last_message_sender_id,
+                    CASE
+                        WHEN lm.id_sender = $1 AND lm.id_message <= COALESCE(crs_other.last_read_message_id, 0) THEN true
+                        ELSE false
+                    END AS last_message_read,
+                    CASE
+                        WHEN lm.id_sender = $1 AND lm.id_message <= COALESCE(crs_other.last_delivered_message_id, 0) THEN true
+                        ELSE false
+                    END AS last_message_delivered,
                     COALESCE((
                         SELECT COUNT(*)::int
                         FROM message m
@@ -181,11 +206,14 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                         WHERE m.id_chat = ac.id_chat
                           AND m.id_sender <> $1
                           AND m.id_message > COALESCE(crs.last_read_message_id, 0)
-                    ), 0) AS unread_count
+                    ), 0) AS unread_count,
+                    EXISTS(SELECT 1 FROM block WHERE id_user = $1 AND id_blocked = ac.counterpart_id) AS is_blocked_by_me,
+                    EXISTS(SELECT 1 FROM block WHERE id_user = ac.counterpart_id AND id_blocked = $1) AS is_blocked_by_other
                 FROM active_chats ac
                 JOIN users u ON u.id_user = ac.counterpart_id
+                LEFT JOIN chat_read_state crs_other ON crs_other.id_chat = ac.id_chat AND crs_other.id_user = ac.counterpart_id
                 LEFT JOIN LATERAL (
-                    SELECT m.content, m.date_sent, m.id_sender
+                    SELECT m.id_message, m.content, m.date_sent, m.id_sender
                     FROM message m
                     WHERE m.id_chat = ac.id_chat
                     ORDER BY m.date_sent DESC, m.id_message DESC
@@ -196,7 +224,12 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
             [userId]
         );
 
-        return res.status(200).json({ success: true, conversations: result.rows });
+        const conversations = result.rows.map(row => ({
+            ...row,
+            is_online: isUserOnline(row.id_user)
+        }));
+
+        return res.status(200).json({ success: true, conversations });
     } catch (error) {
         console.error('Error en getConversations:', error);
         return res.status(500).json({ success: false, message: 'Error al obtener conversaciones' });
@@ -228,12 +261,12 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
         }
 
         const chatId = await getOrCreateChatId(userId, otherUserId);
-        const otherUserReadCursor = await getReadCursor(chatId, otherUserId);
+        const otherUserCursors = await getReadCursor(chatId, otherUserId);
 
         const counterpart = await getCounterpart(otherUserId);
 
         const fetchLimit = limit + 1;
-        const messagesParams: Array<number> = [chatId, userId, otherUserReadCursor, fetchLimit];
+        const messagesParams: Array<number> = [chatId, userId, otherUserCursors.read, otherUserCursors.delivered, fetchLimit];
         let messagesQuery = `
                 SELECT
                     m.id_message,
@@ -246,19 +279,23 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
                     CASE
                         WHEN m.id_sender = $2 AND m.id_message <= $3 THEN true
                         ELSE false
-                    END AS is_read
+                    END AS is_read,
+                    CASE
+                        WHEN m.id_sender = $2 AND m.id_message <= $4 THEN true
+                        ELSE false
+                    END AS is_delivered
                 FROM message m
                 WHERE m.id_chat = $1
         `;
 
         if (beforeId) {
-            messagesQuery += ` AND m.id_message < $5`;
+            messagesQuery += ` AND m.id_message < $6`;
             messagesParams.push(beforeId);
         }
 
         messagesQuery += `
                 ORDER BY m.date_sent DESC, m.id_message DESC
-                LIMIT $4
+                LIMIT $5
         `;
 
         const messagesResult = await pool.query(messagesQuery, messagesParams);
@@ -285,13 +322,25 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
             [chatId, userId, otherUserId]
         );
 
+        const blockResult = await pool.query(
+            `
+                SELECT 
+                    EXISTS(SELECT 1 FROM block WHERE id_user = $1 AND id_blocked = $2) AS is_blocked_by_me,
+                    EXISTS(SELECT 1 FROM block WHERE id_user = $2 AND id_blocked = $1) AS is_blocked_by_other
+            `,
+            [userId, otherUserId]
+        );
+        const { is_blocked_by_me, is_blocked_by_other } = blockResult.rows[0];
+
         return res.status(200).json({
             success: true,
             counterpart,
             chatId,
-            otherUserReadCursor,
+            otherUserCursors,
             hasMore,
             messages,
+            isBlockedByMe: is_blocked_by_me,
+            isBlockedByOther: is_blocked_by_other
         });
     } catch (error) {
         console.error('Error en getConversationMessages:', error);
@@ -318,13 +367,21 @@ export const sendConversationMessage = async (req: AuthRequest, res: Response) =
             return res.status(400).json({ success: false, message: 'Mensaje inválido', issues: parsed.error.issues });
         }
 
+        const blockCheck = await pool.query(
+            'SELECT 1 FROM block WHERE (id_user = $1 AND id_blocked = $2) OR (id_user = $2 AND id_blocked = $1) LIMIT 1',
+            [userId, otherUserId]
+        );
+        if (blockCheck.rows.length > 0) {
+            return res.status(403).json({ success: false, message: 'No puedes enviar mensajes a este usuario' });
+        }
+
         const accepted = await hasAcceptedMatch(userId, otherUserId);
         if (!accepted) {
             return res.status(403).json({ success: false, message: 'No existe un match activo para este chat' });
         }
 
         const chatId = await getOrCreateChatId(userId, otherUserId);
-        const otherUserReadCursor = await getReadCursor(chatId, otherUserId);
+        const otherUserCursors = await getReadCursor(chatId, otherUserId);
 
         const messageResult = await pool.query(
             `
@@ -343,8 +400,8 @@ export const sendConversationMessage = async (req: AuthRequest, res: Response) =
         );
 
         const message = messageResult.rows[0];
-
-        message.is_read = message.id_message <= otherUserReadCursor;
+        message.is_read = message.id_message <= otherUserCursors.read;
+        message.is_delivered = message.id_message <= otherUserCursors.delivered;
 
         await pool.query(
             `
@@ -417,11 +474,12 @@ export const markConversationRead = async (req: AuthRequest, res: Response) => {
 
         await pool.query(
             `
-                INSERT INTO chat_read_state (id_chat, id_user, last_read_message_id, updated_at)
-                VALUES ($1, $2, $3, NOW())
+                INSERT INTO chat_read_state (id_chat, id_user, last_read_message_id, last_delivered_message_id, updated_at)
+                VALUES ($1, $2, $3, $3, NOW())
                 ON CONFLICT (id_chat, id_user)
                 DO UPDATE SET
                     last_read_message_id = GREATEST(COALESCE(chat_read_state.last_read_message_id, 0), EXCLUDED.last_read_message_id),
+                    last_delivered_message_id = GREATEST(COALESCE(chat_read_state.last_delivered_message_id, 0), EXCLUDED.last_delivered_message_id),
                     updated_at = NOW()
             `,
             [chatId, userId, maxIncomingMessageId]
@@ -437,6 +495,64 @@ export const markConversationRead = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error('Error en markConversationRead:', error);
         return res.status(500).json({ success: false, message: 'Error al marcar mensajes como leidos' });
+    }
+};
+
+export const markConversationDelivered = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureChatSchema();
+
+        const userId = Number(req.user?.sub);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const otherUserId = Number(req.params.userId);
+        if (!Number.isInteger(otherUserId) || otherUserId <= 0) {
+            return res.status(400).json({ success: false, message: 'Usuario de chat inválido' });
+        }
+
+        const accepted = await hasAcceptedMatch(userId, otherUserId);
+        if (!accepted) {
+            return res.status(403).json({ success: false, message: 'No existe un match activo para este chat' });
+        }
+
+        const chatId = await getOrCreateChatId(userId, otherUserId);
+
+        const maxIncomingMessageResult = await pool.query(
+            `
+                SELECT COALESCE(MAX(m.id_message), 0)::int AS max_id
+                FROM message m
+                WHERE m.id_chat = $1
+                  AND m.id_sender = $2
+            `,
+            [chatId, otherUserId]
+        );
+
+        const maxIncomingMessageId = Number(maxIncomingMessageResult.rows[0]?.max_id || 0);
+
+        await pool.query(
+            `
+                INSERT INTO chat_read_state (id_chat, id_user, last_delivered_message_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (id_chat, id_user)
+                DO UPDATE SET
+                    last_delivered_message_id = GREATEST(COALESCE(chat_read_state.last_delivered_message_id, 0), EXCLUDED.last_delivered_message_id),
+                    updated_at = NOW()
+            `,
+            [chatId, userId, maxIncomingMessageId]
+        );
+
+        emitToUser(otherUserId, 'chat:messages:delivered', {
+            byUserId: userId,
+            chatUserId: otherUserId,
+            lastDeliveredMessageId: maxIncomingMessageId,
+        });
+
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Error en markConversationDelivered:', error);
+        return res.status(500).json({ success: false, message: 'Error al marcar mensajes como entregados' });
     }
 };
 
@@ -476,7 +592,12 @@ export const checkUserOnlineStatus = async (req: AuthRequest, res: Response) => 
             return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
         }
 
-        const showOnlineStatus = Boolean(preferenceResult.rows[0]?.show_online_status);
+        const blockCheck = await pool.query(
+            'SELECT 1 FROM block WHERE (id_user = $1 AND id_blocked = $2) OR (id_user = $2 AND id_blocked = $1) LIMIT 1',
+            [userId, otherUserId]
+        );
+
+        const showOnlineStatus = Boolean(preferenceResult.rows[0]?.show_online_status) && blockCheck.rows.length === 0;
         if (!showOnlineStatus) {
             return res.status(200).json({
                 success: true,
@@ -497,5 +618,205 @@ export const checkUserOnlineStatus = async (req: AuthRequest, res: Response) => 
     } catch (error) {
         console.error('Error en checkUserOnlineStatus:', error);
         return res.status(500).json({ success: false, message: 'Error al verificar estado de usuario' });
+    }
+};
+
+export const block = async (req: AuthRequest, res: Response) => {
+    try {
+        const blockerId = req.user?.sub;
+        const blockedId = Number(req.params.userId);
+
+        if (!blockerId || !Number.isInteger(blockedId)) {
+            return res.status(400).json({ success: false, message: 'Datos inválidos' });
+        }
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS block (
+                id_block SERIAL PRIMARY KEY,
+                id_user INTEGER NOT NULL REFERENCES users(id_user),
+                id_blocked INTEGER NOT NULL REFERENCES users(id_user),
+                date TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(id_user, id_blocked)
+            )
+        `);
+
+        await pool.query(
+            'INSERT INTO block (id_user, id_blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [blockerId, blockedId]
+        );
+
+        await pool.query(
+            'DELETE FROM match WHERE (id_user1 = $1 AND id_user2 = $2) OR (id_user1 = $2 AND id_user2 = $1)',
+            [blockerId, blockedId]
+        );
+
+        res.status(200).json({ success: true, message: 'Usuario bloqueado correctamente' });
+    } catch (error) {
+        console.error('Error bloqueando usuario:', error);
+        res.status(500).json({ success: false, message: 'Error al bloquear usuario' });
+    }
+};
+
+export const getBlockedUsers = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const result = await pool.query(
+            `
+                SELECT 
+                    u.id_user as id,
+                    u.first_name,
+                    u.last_name,
+                    (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo,
+                    b.date as blocked_at
+                FROM block b
+                JOIN users u ON b.id_blocked = u.id_user
+                WHERE b.id_user = $1
+                ORDER BY b.date DESC
+            `,
+            [userId]
+        );
+
+        res.status(200).json({ success: true, blockedUsers: result.rows });
+    } catch (error) {
+        console.error('Error en getBlockedUsers:', error);
+        res.status(500).json({ success: false, message: 'Error al obtener usuarios bloqueados' });
+    }
+};
+
+export const unblock = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+        const targetUserId = Number(req.params.userId);
+
+        if (!userId || !Number.isInteger(targetUserId)) {
+            return res.status(400).json({ success: false, message: 'Datos inválidos' });
+        }
+
+        await pool.query(
+            'DELETE FROM block WHERE id_user = $1 AND id_blocked = $2',
+            [userId, targetUserId]
+        );
+
+        res.status(200).json({ success: true, message: 'Usuario desbloqueado' });
+    } catch (error) {
+        console.error('Error en unblock:', error);
+        res.status(500).json({ success: false, message: 'Error al desbloquear usuario' });
+    }
+};
+
+export const deleteConversation = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+        const chatUserId = Number(req.params.userId);
+        const { block: blockRequested } = req.query;
+
+        if (!userId || !Number.isInteger(chatUserId)) {
+            return res.status(400).json({ success: false, message: 'Datos inválidos' });
+        }
+
+        if (blockRequested === 'true') {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS block (
+                    id_block SERIAL PRIMARY KEY,
+                    id_user INTEGER NOT NULL REFERENCES users(id_user),
+                    id_blocked INTEGER NOT NULL REFERENCES users(id_user),
+                    date TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(id_user, id_blocked)
+                )
+            `);
+            await pool.query(
+                'INSERT INTO block (id_user, id_blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                [userId, chatUserId]
+            );
+            await pool.query(
+                'DELETE FROM match WHERE (id_user1 = $1 AND id_user2 = $2) OR (id_user1 = $2 AND id_user2 = $1)',
+                [userId, chatUserId]
+            );
+        }
+
+        const chatCheck = await pool.query(
+            'SELECT id_chat FROM chat WHERE (id_user1 = $1 AND id_user2 = $2) OR (id_user1 = $2 AND id_user2 = $1)',
+            [userId, chatUserId]
+        );
+
+        if (chatCheck.rows.length > 0) {
+            const chatId = chatCheck.rows[0].id_chat;
+            await pool.query('DELETE FROM chat WHERE id_chat = $1', [chatId]);
+        }
+
+        res.status(200).json({ 
+            success: true, 
+            message: blockRequested === 'true' ? 'Usuario bloqueado y chat eliminado' : 'Conversación eliminada' 
+        });
+    } catch (error) {
+        console.error('Error borrando conversación:', error);
+        res.status(500).json({ success: false, message: 'Error al eliminar conversación' });
+    }
+};
+
+export const getMyReports = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const result = await pool.query(
+            `
+                SELECT 
+                    r.id_report as id,
+                    u.first_name,
+                    u.last_name,
+                    r.reason,
+                    r.date as created_at
+                FROM report r
+                JOIN users u ON r.id_reported = u.id_user
+                WHERE r.id_user = $1
+                ORDER BY r.date DESC
+            `,
+            [userId]
+        );
+
+        res.status(200).json({ success: true, reports: result.rows });
+    } catch (error) {
+        console.error('Error en getMyReports:', error);
+        res.status(500).json({ success: false, message: 'Error al obtener reportes' });
+    }
+};
+
+export const reportUserInChat = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+        const targetUserId = Number(req.params.userId);
+        const { reason } = req.body;
+
+        if (!userId || !Number.isInteger(targetUserId)) {
+            return res.status(400).json({ success: false, message: 'Datos inválidos' });
+        }
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS report (
+                id_report SERIAL PRIMARY KEY,
+                id_user INTEGER NOT NULL REFERENCES users(id_user),
+                id_reported INTEGER NOT NULL REFERENCES users(id_user),
+                reason TEXT,
+                date TIMESTAMPTZ DEFAULT NOW(),
+                status VARCHAR(20) DEFAULT 'pending'
+            )
+        `);
+
+        await pool.query(
+            'INSERT INTO report (id_user, id_reported, reason, date) VALUES ($1, $2, $3, NOW())',
+            [userId, targetUserId, reason]
+        );
+
+        res.status(200).json({ success: true, message: 'Usuario reportado' });
+    } catch (error) {
+        console.error('Error en reportUserInChat:', error);
+        res.status(500).json({ success: false, message: 'Error al reportar usuario' });
     }
 };
