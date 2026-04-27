@@ -803,7 +803,7 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
         // Permitir ver el perfil si hay un match pendiente o aceptado entre los dos usuarios
         const matchCheck = await pool.query(
             `
-                SELECT * FROM match 
+                SELECT status FROM match 
                 WHERE ((id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1))
                   AND status IN ('pending', 'accepted')
                 LIMIT 1
