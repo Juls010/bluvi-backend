@@ -800,12 +800,12 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, message: 'Usuario inválido' });
         }
 
-        // Verificar que hay un match aceptado entre los dos usuarios
+        // Permitir ver el perfil si hay un match pendiente o aceptado entre los dos usuarios
         const matchCheck = await pool.query(
             `
                 SELECT * FROM match 
                 WHERE ((id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1))
-                  AND status = 'accepted'
+                  AND status IN ('pending', 'accepted')
                 LIMIT 1
             `,
             [requestingUserId, targetUserId]
