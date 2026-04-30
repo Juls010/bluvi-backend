@@ -136,9 +136,10 @@ export const checkEmail = async (req: Request, res: Response) => {
             // Si existe pero no está verificado, permitir registro
         }
         return res.status(200).json({ exists: false, message: "Email disponible" });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error en checkEmail:", error);
-        res.status(500).json({ success: false, message: "Error al verificar email" });
+        require('fs').appendFileSync('error_log.txt', new Date().toISOString() + ' - ' + (error.message || error) + '\n');
+        res.status(500).json({ success: false, message: "Error al verificar email: " + (error.message || error) });
     }
 };
 
