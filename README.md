@@ -39,6 +39,8 @@ Esta es la API REST que sustenta la plataforma **Bluvi**. Está diseñada bajo u
     - `REDIS_DEFAULT_TTL_SECONDS=60`: TTL por defecto para entradas de caché.
     - `CACHE_REGISTER_METADATA_TTL_SECONDS=3600`: TTL para metadata de registro.
     - `CACHE_EXPLORE_TTL_SECONDS=30`: TTL para listados de descubrimiento.
+    - `HUGGINGFACE_API_TOKEN`: token de Hugging Face para la transcripción de audio.
+    - `HUGGINGFACE_TRANSCRIPTION_MODEL`: modelo ASR open source a usar, por ejemplo `openai/whisper-large-v3`.
 
 ## Gestión de Base de Datos (Docker)
 
@@ -78,6 +80,13 @@ Si más adelante migras la base de datos a Supabase, solo tendrás que cambiar `
     - `GET /api/auth/metadata`
     - `GET /api/users/explore`
 - Invalida caché de discovery del usuario cuando actualiza perfil, privacidad o marca perfiles vistos.
+
+## Transcripción de audio con Hugging Face
+
+- El backend descarga el audio desde Supabase o usa una URL pública firmada.
+- Después envía el archivo a Hugging Face Inference API con un modelo Whisper open source.
+- Configura `HUGGINGFACE_API_TOKEN` y, si quieres cambiar de modelo, `HUGGINGFACE_TRANSCRIPTION_MODEL`.
+- El modelo por defecto es `openai/whisper-large-v3`.
 
 ## Cloudflare (SSL + capa de seguridad)
 

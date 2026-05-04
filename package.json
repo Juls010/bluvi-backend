@@ -31,7 +31,9 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.27.0",
     "@upstash/redis": "^1.37.0",
+    "axios": "^1.4.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",

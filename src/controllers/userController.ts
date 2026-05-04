@@ -4,6 +4,7 @@ import { Response } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { cacheConfig, cacheDeleteByPrefix, cacheGetJson, cacheSetJson } from '../services/cache';
+import { handleUserVisibilityChange } from '../services/socket';
 
 let matchTableReadyPromise: Promise<void> | null = null;
 let discoverySeenTableReadyPromise: Promise<void> | null = null;
@@ -454,7 +455,11 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                     JOIN communication_style cat ON ucs.id_communication = cat.id_communication 
                     WHERE ucs.id_user = u.id_user), 
                     '[]'
-                ) as communication_style
+                ) as communication_style,
+                COALESCE(
+                    (SELECT json_agg(url_photo) FROM photo WHERE id_user = u.id_user),
+                    '[]'
+                ) as photos
             FROM users u
             LEFT JOIN user_interest ui ON u.id_user = ui.id_user
             LEFT JOIN interest i ON ui.id_interest = i.id_interest
@@ -462,6 +467,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             LEFT JOIN feature f ON uf.id_feature = f.id_feature
                         WHERE u.id_user != $1
                             AND u.is_verified = true
+                            AND u.is_visible = true
                             AND NOT EXISTS (
                                         SELECT 1
                                         FROM match m
@@ -469,6 +475,12 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                                                 (m.id_user = $1 AND m.id_matched = u.id_user)
                                                 OR (m.id_user = u.id_user AND m.id_matched = $1)
                                         )
+                            )
+                            AND NOT EXISTS (
+                                        SELECT 1 
+                                        FROM block b 
+                                        WHERE (b.id_user = $1 AND b.id_blocked = u.id_user) 
+                                           OR (b.id_user = u.id_user AND b.id_blocked = $1)
                             )
         `;
 
@@ -710,6 +722,10 @@ export const updatePrivacy = async (req: AuthRequest, res: Response) => {
         );
 
         await invalidateUserExploreCache(userId);
+
+        if (show_online_status !== undefined) {
+            handleUserVisibilityChange(userId, show_online_status);
+        }
 
         const result = await pool.query(
             'SELECT is_visible, messages_only_matches, show_online_status FROM users WHERE id_user = $1',

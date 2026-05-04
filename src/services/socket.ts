@@ -1,9 +1,11 @@
 import { Server } from 'socket.io';
 import type { Server as HttpServer } from 'http';
 import { verifyAccessToken } from './jwt';
+import { pool } from '../config/db';
 
 let io: Server | null = null;
-const connectedUsers = new Map<number, Set<string>>(); // userId -> socketIds
+const connectedUsers = new Map<number, Set<string>>();
+const invisibleUsers = new Set<number>(); 
 
 export const initSocket = (httpServer: HttpServer) => {
     io = new Server(httpServer, {
@@ -27,9 +29,23 @@ export const initSocket = (httpServer: HttpServer) => {
         return next();
     });
 
-    io.on('connection', (socket) => {
+    io.on('connection', async (socket) => {
         const userId = socket.data.userId;
         if (userId) {
+            try {
+                const result = await pool.query('SELECT show_online_status FROM users WHERE id_user = $1', [userId]);
+                const isVisible = result.rows[0]?.show_online_status ?? true;
+
+                if (!isVisible) {
+                    invisibleUsers.add(userId);
+                } else {
+                    invisibleUsers.delete(userId);
+                }
+            } catch (err) {
+                console.error('Error al comprobar show_online_status en socket:', err);
+                invisibleUsers.add(userId);
+            }
+
             socket.join(`user:${userId}`);
 
             const userSockets = connectedUsers.get(userId) ?? new Set<string>();
@@ -37,12 +53,10 @@ export const initSocket = (httpServer: HttpServer) => {
             userSockets.add(socket.id);
             connectedUsers.set(userId, userSockets);
 
-            // Notificar online solo cuando pasa de 0 -> 1 conexiones activas
-            if (wasOffline) {
+            if (wasOffline && !invisibleUsers.has(userId)) {
                 io?.emit('user:online', { userId, timestamp: new Date().toISOString() });
             }
 
-            // Enviar lista de usuarios online al que se acaba de conectar
             socket.emit('user:status:initial', { onlineUserIds: getConnectedUsers() });
         }
 
@@ -83,8 +97,10 @@ export const initSocket = (httpServer: HttpServer) => {
 
                 if (userSockets.size === 0) {
                     connectedUsers.delete(userId);
-                    // Notificar offline solo cuando se cierra la ultima conexion
-                    io?.emit('user:offline', { userId, timestamp: new Date().toISOString() });
+                    if (!invisibleUsers.has(userId)) {
+                        io?.emit('user:offline', { userId, timestamp: new Date().toISOString() });
+                    }
+                    invisibleUsers.delete(userId); 
                 } else {
                     connectedUsers.set(userId, userSockets);
                 }
@@ -101,9 +117,24 @@ export const emitToUser = (userId: number, event: string, payload: unknown) => {
 };
 
 export const isUserOnline = (userId: number): boolean => {
+    if (invisibleUsers.has(userId)) return false;
     return (connectedUsers.get(userId)?.size ?? 0) > 0;
 };
 
 export const getConnectedUsers = (): number[] => {
-    return Array.from(connectedUsers.keys());
+    return Array.from(connectedUsers.keys()).filter(id => !invisibleUsers.has(id));
+};
+
+export const handleUserVisibilityChange = (userId: number, isVisible: boolean) => {
+    if (isVisible) {
+        invisibleUsers.delete(userId);
+        if (connectedUsers.has(userId)) {
+            io?.emit('user:online', { userId, timestamp: new Date().toISOString() });
+        }
+    } else {
+        invisibleUsers.add(userId);
+        if (connectedUsers.has(userId)) {
+            io?.emit('user:offline', { userId, timestamp: new Date().toISOString() });
+        }
+    }
 };

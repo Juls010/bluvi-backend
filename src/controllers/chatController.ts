@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { pool } from '../config/db';
 import { AuthRequest } from '../middlewares/authMiddleware';
 import { emitToUser, isUserOnline } from '../services/socket';
+import { createSignedDownloadUrl, getDefaultAudioBucket } from '../services/storageService';
 
 const sendMessageSchema = z.object({
     message: z.string().trim().min(1).max(1000),
@@ -29,8 +30,34 @@ const ensureChatSchema = async () => {
                     id_chat INTEGER NOT NULL REFERENCES chat(id_chat) ON DELETE CASCADE,
                     id_sender INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
                     content TEXT NOT NULL,
+                        message_type VARCHAR(20) NOT NULL DEFAULT 'text',
+                        audio_url TEXT,
+                        duration_seconds FLOAT,
+                        transcript TEXT,
                     date_sent TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            `);
+
+            await pool.query(`
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='message_type') THEN
+                        ALTER TABLE message ADD COLUMN message_type VARCHAR(20) NOT NULL DEFAULT 'text';
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='audio_url') THEN
+                        ALTER TABLE message ADD COLUMN audio_url TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='duration_seconds') THEN
+                        ALTER TABLE message ADD COLUMN duration_seconds FLOAT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='transcript') THEN
+                        ALTER TABLE message ADD COLUMN transcript TEXT;
+                    END IF;
+                END $$;
             `);
 
             await pool.query(`
@@ -162,6 +189,16 @@ const getReadCursor = async (chatId: number, userId: number) => {
     };
 };
 
+const signAudioUrl = async (audioUrl?: string | null) => {
+    if (!audioUrl) return audioUrl ?? null;
+
+    if (/^https?:\/\//i.test(audioUrl)) {
+        return audioUrl;
+    }
+
+    return createSignedDownloadUrl(getDefaultAudioBucket(), audioUrl, 3600 * 24 * 7);
+};
+
 export const getConversations = async (req: AuthRequest, res: Response) => {
     try {
         await ensureChatSchema();
@@ -189,6 +226,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo,
                     lm.id_message AS last_message_id,
                     lm.content AS last_message,
+                    lm.message_type AS last_message_type,
                     lm.date_sent AS last_message_at,
                     lm.id_sender AS last_message_sender_id,
                     CASE
@@ -204,8 +242,8 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                         FROM message m
                         LEFT JOIN chat_read_state crs ON crs.id_chat = ac.id_chat AND crs.id_user = $1
                         WHERE m.id_chat = ac.id_chat
-                          AND m.id_sender <> $1
-                          AND m.id_message > COALESCE(crs.last_read_message_id, 0)
+                            AND m.id_sender <> $1
+                            AND m.id_message > COALESCE(crs.last_read_message_id, 0)
                     ), 0) AS unread_count,
                     EXISTS(SELECT 1 FROM block WHERE id_user = $1 AND id_blocked = ac.counterpart_id) AS is_blocked_by_me,
                     EXISTS(SELECT 1 FROM block WHERE id_user = ac.counterpart_id AND id_blocked = $1) AS is_blocked_by_other
@@ -213,7 +251,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                 JOIN users u ON u.id_user = ac.counterpart_id
                 LEFT JOIN chat_read_state crs_other ON crs_other.id_chat = ac.id_chat AND crs_other.id_user = ac.counterpart_id
                 LEFT JOIN LATERAL (
-                    SELECT m.id_message, m.content, m.date_sent, m.id_sender
+                    SELECT m.id_message, m.content, m.message_type, m.date_sent, m.id_sender
                     FROM message m
                     WHERE m.id_chat = ac.id_chat
                     ORDER BY m.date_sent DESC, m.id_message DESC
@@ -274,6 +312,10 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
                     m.id_sender AS sender_id,
                     CASE WHEN m.id_sender = $2 THEN $3 ELSE $2 END AS receiver_id,
                     m.content,
+                    m.message_type,
+                    m.audio_url,
+                    m.transcript,
+                    m.duration_seconds,
                     m.date_sent AS created_at,
                     NULL::timestamptz AS read_at,
                     CASE
@@ -300,7 +342,11 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
 
         const messagesResult = await pool.query(messagesQuery, messagesParams);
         const hasMore = messagesResult.rows.length > limit;
-        const messages = hasMore ? messagesResult.rows.slice(0, limit).reverse() : messagesResult.rows.reverse();
+        const baseMessages = hasMore ? messagesResult.rows.slice(0, limit).reverse() : messagesResult.rows.reverse();
+        const messages = await Promise.all(baseMessages.map(async (message) => ({
+            ...message,
+            audio_url: message.message_type === 'audio' ? await signAudioUrl(message.audio_url) : message.audio_url,
+        })));
 
         await pool.query(
             `
@@ -394,6 +440,7 @@ export const sendConversationMessage = async (req: AuthRequest, res: Response) =
                     $4::integer AS receiver_id,
                     content,
                     date_sent AS created_at,
+                    transcript,
                     NULL::timestamptz AS read_at
             `,
             [chatId, userId, parsed.data.message, otherUserId]
@@ -646,7 +693,7 @@ export const block = async (req: AuthRequest, res: Response) => {
         );
 
         await pool.query(
-            'DELETE FROM match WHERE (id_user1 = $1 AND id_user2 = $2) OR (id_user1 = $2 AND id_user2 = $1)',
+            'DELETE FROM match WHERE (id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1)',
             [blockerId, blockedId]
         );
 
@@ -733,7 +780,7 @@ export const deleteConversation = async (req: AuthRequest, res: Response) => {
                 [userId, chatUserId]
             );
             await pool.query(
-                'DELETE FROM match WHERE (id_user1 = $1 AND id_user2 = $2) OR (id_user1 = $2 AND id_user2 = $1)',
+                'DELETE FROM match WHERE (id_user = $1 AND id_matched = $2) OR (id_user = $2 AND id_matched = $1)',
                 [userId, chatUserId]
             );
         }
@@ -785,6 +832,80 @@ export const getMyReports = async (req: AuthRequest, res: Response) => {
     } catch (error) {
         console.error('Error en getMyReports:', error);
         res.status(500).json({ success: false, message: 'Error al obtener reportes' });
+    }
+};
+
+export const sendAudioMessage = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureChatSchema();
+
+        const userId = Number(req.user?.sub);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const otherUserId = Number(req.params.userId);
+        if (!Number.isInteger(otherUserId) || otherUserId <= 0) {
+            return res.status(400).json({ success: false, message: 'Usuario de chat inválido' });
+        }
+
+        const { audioUrl, durationSeconds } = req.body;
+
+        if (!audioUrl || typeof audioUrl !== 'string' || !audioUrl.trim()) {
+            return res.status(400).json({ success: false, message: 'URL de audio inválida' });
+        }
+
+        if (!durationSeconds || typeof durationSeconds !== 'number' || durationSeconds <= 0) {
+            return res.status(400).json({ success: false, message: 'Duración de audio inválida' });
+        }
+
+        const blockCheck = await pool.query(
+            'SELECT 1 FROM block WHERE (id_user = $1 AND id_blocked = $2) OR (id_user = $2 AND id_blocked = $1) LIMIT 1',
+            [userId, otherUserId]
+        );
+        if (blockCheck.rows.length > 0) {
+            return res.status(403).json({ success: false, message: 'No puedes enviar mensajes a este usuario' });
+        }
+
+        const accepted = await hasAcceptedMatch(userId, otherUserId);
+        if (!accepted) {
+            return res.status(403).json({ success: false, message: 'No existe un match activo para este chat' });
+        }
+
+        const chatId = await getOrCreateChatId(userId, otherUserId);
+        const otherUserCursors = await getReadCursor(chatId, otherUserId);
+
+        const messageResult = await pool.query(
+            `
+                INSERT INTO message (id_chat, id_sender, content, message_type, audio_url, duration_seconds, date_sent)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                RETURNING
+                    id_message,
+                    id_chat AS chat_id,
+                    id_sender AS sender_id,
+                    $7::integer AS receiver_id,
+                    content,
+                    message_type,
+                    audio_url,
+                    duration_seconds,
+                    transcript,
+                    date_sent AS created_at,
+                    NULL::timestamptz AS read_at
+            `,
+            [chatId, userId, '[Audio message]', 'audio', audioUrl.trim(), durationSeconds, otherUserId]
+        );
+
+        const message = {
+            ...messageResult.rows[0],
+            audio_url: await signAudioUrl(messageResult.rows[0]?.audio_url),
+        };
+
+        emitToUser(otherUserId, 'chat:new-message', message);
+
+        res.status(201).json({ success: true, message });
+    } catch (error) {
+        console.error('Error en sendAudioMessage:', error);
+        res.status(500).json({ success: false, message: 'Error al enviar mensaje de audio' });
     }
 };
 

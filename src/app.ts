@@ -7,6 +7,8 @@ import interestRoutes from './routes/interestRoutes';
 import userRoutes from './routes/userRoutes';
 import matchRoutes from './routes/matchRoutes';
 import chatRoutes from './routes/chatRoutes';
+import transcriptionRoutes from './routes/transcriptionRoutes';
+import storageRoutes from './routes/storageRoutes';
 import { createRateLimiter } from './middlewares/rateLimit';
 
 const app = express();
@@ -138,6 +140,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/matches', matchRoutes);
 app.use('/api/chats', chatRoutes);
+app.use('/api/transcriptions', transcriptionRoutes);
+app.use('/api/storage', storageRoutes);
 
 
 app.get('/', (req, res) => {
