@@ -134,6 +134,7 @@ const ensurePrivacyColumns = async () => {
 const PROFILE_QUERY = `
     SELECT 
         u.id_user, u.email, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.avatar_url,
+        COALESCE(u.is_face_verified, false) AS is_face_verified,
         
         COALESCE(
             (SELECT json_agg(up.id_preference::integer) FROM user_preference up WHERE up.id_user = u.id_user),
@@ -323,6 +324,31 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         const message = error instanceof Error ? error.message : 'Error interno';
         const isValidation = message !== 'Error interno' && message !== 'Error al actualizar perfil';
         res.status(isValidation ? 400 : 500).json({ success: false, message: isValidation ? message : 'Error interno' });
+    }
+};
+
+export const markFaceVerification = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user?.sub;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Usuario no identificado" });
+        }
+
+        await pool.query(
+            `UPDATE users
+            SET is_face_verified = true
+            WHERE id_user = $1`,
+            [userId]
+        );
+
+        const result = await pool.query(PROFILE_QUERY, [userId]);
+        await invalidateUserExploreCache(userId);
+
+        return res.status(200).json({ success: true, user: result.rows[0] });
+    } catch (error) {
+        console.error("Error al marcar verificacion facial:", error);
+        return res.status(500).json({ success: false, message: "Error interno" });
     }
 };
 

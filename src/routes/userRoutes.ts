@@ -7,6 +7,7 @@ import {
 	getPrivacy,
 	updatePrivacy,
 	markDiscoverUserSeen,
+	markFaceVerification,
 	getUserProfile,
 	getAccessibilityPreferences,
 	updateAccessibilityPreferences,
@@ -17,6 +18,7 @@ const router = Router();
 
 router.get('/profile', authenticateToken, getProfile);
 router.put('/profile', authenticateToken, updateProfile);
+router.patch('/profile/face-verification', authenticateToken, markFaceVerification);
 router.get('/explore', authenticateToken, getExploreUsers);
 router.post('/discovery/seen', authenticateToken, markDiscoverUserSeen);
 router.delete('/profile', authenticateToken, deleteAccount);
