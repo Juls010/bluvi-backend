@@ -473,6 +473,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
                 u.id_gender,      
                 u.id_preference,  
                 u.avatar_url as main_photo,
+                COALESCE(u.is_face_verified, false) AS is_face_verified,
                 COALESCE(json_agg(DISTINCT i.name) FILTER (WHERE i.name IS NOT NULL), '[]') as interests,
                 COALESCE(json_agg(DISTINCT f.name) FILTER (WHERE f.name IS NOT NULL), '[]') as features,
                 COALESCE(
@@ -617,7 +618,7 @@ export const getExploreUsers = async (req: AuthRequest, res: Response) => {
             paramCount++;
         }
 
-        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference, u.avatar_url, u.city_lat, u.city_lng`;
+        queryText += ` GROUP BY u.id_user, u.first_name, u.last_name, u.birth_date, u.city, u.description, u.id_gender, u.id_preference, u.avatar_url, u.is_face_verified, u.city_lat, u.city_lng`;
 
         if (maxDistance > 0 && currentUserLat !== null && currentUserLng !== null) {
             queryText += ` ORDER BY (
@@ -872,7 +873,8 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
                     u.is_visible,
                     u.messages_only_matches,
                     u.created_at,
-                    u.avatar_url
+                    u.avatar_url,
+                    COALESCE(u.is_face_verified, false) AS is_face_verified
                 FROM users u
                 WHERE u.id_user = $1 AND u.is_verified = true
             `,
@@ -951,6 +953,7 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
                 id_gender: user.id_gender,
                 id_preference: user.id_preference,
                 description: user.description,
+                is_face_verified: user.is_face_verified,
                 main_photo: photos[0] || null,
                 photos,
                 interests,

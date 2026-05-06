@@ -159,6 +159,7 @@ const getCounterpart = async (otherUserId: number) => {
                 u.id_user,
                 u.first_name,
                 u.last_name,
+                COALESCE(u.is_face_verified, false) AS is_face_verified,
                 (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo
             FROM users u
             WHERE u.id_user = $1
@@ -223,6 +224,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                     u.id_user,
                     u.first_name,
                     u.last_name,
+                    COALESCE(u.is_face_verified, false) AS is_face_verified,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo,
                     lm.id_message AS last_message_id,
                     lm.content AS last_message,

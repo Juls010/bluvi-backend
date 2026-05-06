@@ -211,6 +211,7 @@ export const getIncomingRequests = async (req: AuthRequest, res: Response) => {
                     u.id_user,
                     u.first_name,
                     u.last_name,
+                    COALESCE(u.is_face_verified, false) AS is_face_verified,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo
                 FROM match m
                 JOIN users u ON u.id_user = m.id_user
@@ -313,6 +314,7 @@ export const getMyMatches = async (req: AuthRequest, res: Response) => {
                     CASE WHEN m.id_user = $1 THEN m.id_matched ELSE m.id_user END AS id_user,
                     u.first_name,
                     u.last_name,
+                    COALESCE(u.is_face_verified, false) AS is_face_verified,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo
                 FROM match m
                 JOIN users u ON u.id_user = CASE WHEN m.id_user = $1 THEN m.id_matched ELSE m.id_user END
