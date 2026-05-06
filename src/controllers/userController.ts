@@ -5,6 +5,7 @@ import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { cacheConfig, cacheDeleteByPrefix, cacheGetJson, cacheSetJson } from '../services/cache';
 import { handleUserVisibilityChange } from '../services/socket';
+import { processPendingDeletionEmails, sendAccountDeletionEmail } from '../services/emailService';
 
 let matchTableReadyPromise: Promise<void> | null = null;
 let discoverySeenTableReadyPromise: Promise<void> | null = null;
@@ -128,8 +129,6 @@ const ensurePrivacyColumns = async () => {
 
     await privacyColumnsReadyPromise;
 };
-
-// ─── Query reutilizable ───────────────────────────────────────────────────────
 
 const PROFILE_QUERY = `
     SELECT 
@@ -678,12 +677,8 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
 
         const { password } = parsed.data;
 
-        if (!password) {
-            return res.status(400).json({ success: false, message: "La contraseña es obligatoria" });
-        }
-
         const result = await client.query(
-            'SELECT password FROM users WHERE id_user = $1',
+            'SELECT password, email, first_name FROM users WHERE id_user = $1',
             [userId]
         );
 
@@ -691,7 +686,9 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
             return res.status(404).json({ success: false, message: "Usuario no encontrado" });
         }
 
-        const isMatch = await bcrypt.compare(password, result.rows[0].password);
+        const { password: hashedPassword, email, first_name } = result.rows[0];
+
+        const isMatch = await bcrypt.compare(password, hashedPassword);
         if (!isMatch) {
             return res.status(401).json({ success: false, message: "Contraseña incorrecta" });
         }
@@ -699,22 +696,29 @@ export const deleteAccount = async (req: AuthRequest, res: Response) => {
         await client.query('BEGIN');
 
         await client.query('DELETE FROM user_communication_style WHERE id_user = $1', [userId]);
-        await client.query('DELETE FROM user_preference       WHERE id_user = $1', [userId]);
-        await client.query('DELETE FROM user_interest         WHERE id_user = $1', [userId]);
-        await client.query('DELETE FROM user_feature          WHERE id_user = $1', [userId]);
-        await client.query('DELETE FROM photo                 WHERE id_user = $1', [userId]);
-        await client.query('DELETE FROM users                 WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_preference WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_interest WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM user_feature WHERE id_user = $1', [userId]);
+        await client.query('DELETE FROM photo WHERE id_user = $1', [userId]);
+        
+        await client.query('DELETE FROM users WHERE id_user = $1', [userId]);
 
         await client.query('COMMIT');
 
         await invalidateUserExploreCache(userId);
 
-        res.status(200).json({ success: true, message: "Cuenta eliminada correctamente" });
+        try {
+            await processPendingDeletionEmails();
+        } catch (mailError) {
+            console.error("Usuario borrado, pero falló el envío del email:", mailError);
+        }
+
+        return res.status(200).json({ success: true, message: "Cuenta eliminada correctamente" });
 
     } catch (error) {
         await client.query('ROLLBACK');
         console.error("Error al eliminar cuenta:", error);
-        res.status(500).json({ success: false, message: "Error interno" });
+        return res.status(500).json({ success: false, message: "Error interno" });
     } finally {
         client.release();
     }
