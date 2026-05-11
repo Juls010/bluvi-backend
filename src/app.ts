@@ -9,6 +9,7 @@ import matchRoutes from './routes/matchRoutes';
 import chatRoutes from './routes/chatRoutes';
 import transcriptionRoutes from './routes/transcriptionRoutes';
 import storageRoutes from './routes/storageRoutes';
+import narrationRoutes from './routes/narrationRoutes';
 import { createRateLimiter } from './middlewares/rateLimit';
 
 const app = express();
@@ -142,10 +143,11 @@ app.use('/api/matches', matchRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/transcriptions', transcriptionRoutes);
 app.use('/api/storage', storageRoutes);
+app.use('/api/narration', narrationRoutes);
 
 
 app.get('/', (req, res) => {
     res.send('Servidor de Bluvi funcionando');
 });
 
-export default app; 
+export default app;

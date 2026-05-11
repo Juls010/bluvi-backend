@@ -14,6 +14,8 @@ import {
     unblock,
     getMyReports,
     sendAudioMessage,
+    sendImageMessage,
+    deleteMessageForEveryone,
 } from '../controllers/chatController';
 
 const router = Router();
@@ -24,6 +26,8 @@ router.get('/:userId/messages', authenticateToken, getConversationMessages);
 router.get('/:userId/online', authenticateToken, checkUserOnlineStatus);
 router.post('/:userId/messages', authenticateToken, sendConversationMessage);
 router.post('/:userId/messages/audio', authenticateToken, sendAudioMessage);
+router.post('/:userId/messages/image', authenticateToken, sendImageMessage);
+router.patch('/messages/:messageId/delete', authenticateToken, deleteMessageForEveryone);
 router.patch('/:userId/read', authenticateToken, markConversationRead);
 router.patch('/:userId/delivered', authenticateToken, markConversationDelivered);
 router.delete('/:userId', authenticateToken, deleteConversation);

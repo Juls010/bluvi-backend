@@ -9,6 +9,10 @@ const sendMessageSchema = z.object({
     message: z.string().trim().min(1).max(1000),
 });
 
+const imageUrlSchema = z.object({
+    imageUrl: z.string().trim().url().max(2000),
+});
+
 let chatSchemaReadyPromise: Promise<void> | null = null;
 
 const ensureChatSchema = async () => {
@@ -30,10 +34,13 @@ const ensureChatSchema = async () => {
                     id_chat INTEGER NOT NULL REFERENCES chat(id_chat) ON DELETE CASCADE,
                     id_sender INTEGER NOT NULL REFERENCES users(id_user) ON DELETE CASCADE,
                     content TEXT NOT NULL,
-                        message_type VARCHAR(20) NOT NULL DEFAULT 'text',
-                        audio_url TEXT,
-                        duration_seconds FLOAT,
-                        transcript TEXT,
+                    message_type VARCHAR(20) NOT NULL DEFAULT 'text',
+                    audio_url TEXT,
+                    image_url TEXT,
+                    duration_seconds FLOAT,
+                    transcript TEXT,
+                    deleted_at TIMESTAMPTZ,
+                    deleted_by INTEGER REFERENCES users(id_user),
                     date_sent TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             `);
@@ -50,12 +57,24 @@ const ensureChatSchema = async () => {
                         ALTER TABLE message ADD COLUMN audio_url TEXT;
                     END IF;
                     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='image_url') THEN
+                        ALTER TABLE message ADD COLUMN image_url TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                 WHERE table_name='message' AND column_name='duration_seconds') THEN
                         ALTER TABLE message ADD COLUMN duration_seconds FLOAT;
                     END IF;
                     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                 WHERE table_name='message' AND column_name='transcript') THEN
                         ALTER TABLE message ADD COLUMN transcript TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='deleted_at') THEN
+                        ALTER TABLE message ADD COLUMN deleted_at TIMESTAMPTZ;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name='message' AND column_name='deleted_by') THEN
+                        ALTER TABLE message ADD COLUMN deleted_by INTEGER REFERENCES users(id_user);
                     END IF;
                 END $$;
             `);
@@ -200,6 +219,16 @@ const signAudioUrl = async (audioUrl?: string | null) => {
     return createSignedDownloadUrl(getDefaultAudioBucket(), audioUrl, 3600 * 24 * 7);
 };
 
+const signMediaUrl = async (mediaUrl?: string | null) => {
+    if (!mediaUrl) return mediaUrl ?? null;
+
+    if (/^https?:\/\//i.test(mediaUrl)) {
+        return mediaUrl;
+    }
+
+    return createSignedDownloadUrl(getDefaultAudioBucket(), mediaUrl, 3600 * 24 * 7);
+};
+
 export const getConversations = async (req: AuthRequest, res: Response) => {
     try {
         await ensureChatSchema();
@@ -227,7 +256,12 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                     COALESCE(u.is_face_verified, false) AS is_face_verified,
                     (SELECT url_photo FROM photo WHERE id_user = u.id_user ORDER BY is_primary DESC, id_photo ASC LIMIT 1) AS main_photo,
                     lm.id_message AS last_message_id,
-                    lm.content AS last_message,
+                    CASE
+                        WHEN lm.deleted_at IS NOT NULL THEN 'Mensaje eliminado'
+                        WHEN lm.message_type = 'audio' THEN 'Nota de audio'
+                        WHEN lm.message_type = 'image' THEN 'Foto'
+                        ELSE lm.content
+                    END AS last_message,
                     lm.message_type AS last_message_type,
                     lm.date_sent AS last_message_at,
                     lm.id_sender AS last_message_sender_id,
@@ -253,7 +287,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
                 JOIN users u ON u.id_user = ac.counterpart_id
                 LEFT JOIN chat_read_state crs_other ON crs_other.id_chat = ac.id_chat AND crs_other.id_user = ac.counterpart_id
                 LEFT JOIN LATERAL (
-                    SELECT m.id_message, m.content, m.message_type, m.date_sent, m.id_sender
+                    SELECT m.id_message, m.content, m.message_type, m.date_sent, m.id_sender, m.deleted_at
                     FROM message m
                     WHERE m.id_chat = ac.id_chat
                     ORDER BY m.date_sent DESC, m.id_message DESC
@@ -316,8 +350,11 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
                     m.content,
                     m.message_type,
                     m.audio_url,
+                    m.image_url,
                     m.transcript,
                     m.duration_seconds,
+                    m.deleted_at,
+                    m.deleted_by,
                     m.date_sent AS created_at,
                     NULL::timestamptz AS read_at,
                     CASE
@@ -347,7 +384,8 @@ export const getConversationMessages = async (req: AuthRequest, res: Response) =
         const baseMessages = hasMore ? messagesResult.rows.slice(0, limit).reverse() : messagesResult.rows.reverse();
         const messages = await Promise.all(baseMessages.map(async (message) => ({
             ...message,
-            audio_url: message.message_type === 'audio' ? await signAudioUrl(message.audio_url) : message.audio_url,
+            audio_url: message.deleted_at ? null : message.message_type === 'audio' ? await signAudioUrl(message.audio_url) : message.audio_url,
+            image_url: message.deleted_at ? null : message.message_type === 'image' ? await signMediaUrl(message.image_url) : message.image_url,
         })));
 
         await pool.query(
@@ -902,12 +940,216 @@ export const sendAudioMessage = async (req: AuthRequest, res: Response) => {
             audio_url: await signAudioUrl(messageResult.rows[0]?.audio_url),
         };
 
-        emitToUser(otherUserId, 'chat:new-message', message);
+        message.is_read = message.id_message <= otherUserCursors.read;
+        message.is_delivered = message.id_message <= otherUserCursors.delivered;
+
+        await pool.query(
+            `
+                INSERT INTO chat_read_state (id_chat, id_user, last_read_message_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (id_chat, id_user)
+                DO UPDATE SET
+                    last_read_message_id = GREATEST(COALESCE(chat_read_state.last_read_message_id, 0), EXCLUDED.last_read_message_id),
+                    updated_at = NOW()
+            `,
+            [chatId, userId, message.id_message]
+        );
+
+        emitToUser(otherUserId, 'chat:message:new', {
+            fromUserId: userId,
+            message,
+        });
 
         res.status(201).json({ success: true, message });
     } catch (error) {
         console.error('Error en sendAudioMessage:', error);
         res.status(500).json({ success: false, message: 'Error al enviar mensaje de audio' });
+    }
+};
+
+export const sendImageMessage = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureChatSchema();
+
+        const userId = Number(req.user?.sub);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const otherUserId = Number(req.params.userId);
+        if (!Number.isInteger(otherUserId) || otherUserId <= 0) {
+            return res.status(400).json({ success: false, message: 'Usuario de chat inválido' });
+        }
+
+        const parsed = imageUrlSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ success: false, message: 'URL de imagen inválida' });
+        }
+
+        const verificationResult = await pool.query(
+            'SELECT COALESCE(is_face_verified, false) AS is_face_verified FROM users WHERE id_user = $1 LIMIT 1',
+            [userId]
+        );
+
+        if (!verificationResult.rows[0]?.is_face_verified) {
+            return res.status(403).json({ success: false, message: 'Solo pueden enviar fotos los perfiles verificados' });
+        }
+
+        const blockCheck = await pool.query(
+            'SELECT 1 FROM block WHERE (id_user = $1 AND id_blocked = $2) OR (id_user = $2 AND id_blocked = $1) LIMIT 1',
+            [userId, otherUserId]
+        );
+        if (blockCheck.rows.length > 0) {
+            return res.status(403).json({ success: false, message: 'No puedes enviar mensajes a este usuario' });
+        }
+
+        const accepted = await hasAcceptedMatch(userId, otherUserId);
+        if (!accepted) {
+            return res.status(403).json({ success: false, message: 'No existe un match activo para este chat' });
+        }
+
+        const chatId = await getOrCreateChatId(userId, otherUserId);
+        const otherUserCursors = await getReadCursor(chatId, otherUserId);
+
+        const messageResult = await pool.query(
+            `
+                INSERT INTO message (id_chat, id_sender, content, message_type, image_url, date_sent)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                RETURNING
+                    id_message,
+                    id_chat AS chat_id,
+                    id_sender AS sender_id,
+                    $6::integer AS receiver_id,
+                    content,
+                    message_type,
+                    image_url,
+                    transcript,
+                    date_sent AS created_at,
+                    NULL::timestamptz AS read_at
+            `,
+            [chatId, userId, '[Image message]', 'image', parsed.data.imageUrl, otherUserId]
+        );
+
+        const message = {
+            ...messageResult.rows[0],
+            image_url: await signMediaUrl(messageResult.rows[0]?.image_url),
+        };
+
+        message.is_read = message.id_message <= otherUserCursors.read;
+        message.is_delivered = message.id_message <= otherUserCursors.delivered;
+
+        await pool.query(
+            `
+                INSERT INTO chat_read_state (id_chat, id_user, last_read_message_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (id_chat, id_user)
+                DO UPDATE SET
+                    last_read_message_id = GREATEST(COALESCE(chat_read_state.last_read_message_id, 0), EXCLUDED.last_read_message_id),
+                    updated_at = NOW()
+            `,
+            [chatId, userId, message.id_message]
+        );
+
+        emitToUser(otherUserId, 'chat:message:new', {
+            fromUserId: userId,
+            message,
+        });
+
+        return res.status(201).json({ success: true, message });
+    } catch (error) {
+        console.error('Error en sendImageMessage:', error);
+        return res.status(500).json({ success: false, message: 'Error al enviar imagen' });
+    }
+};
+
+export const deleteMessageForEveryone = async (req: AuthRequest, res: Response) => {
+    try {
+        await ensureChatSchema();
+
+        const userId = Number(req.user?.sub);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(401).json({ success: false, message: 'Usuario no identificado' });
+        }
+
+        const messageId = Number(req.params.messageId);
+        if (!Number.isInteger(messageId) || messageId <= 0) {
+            return res.status(400).json({ success: false, message: 'Mensaje invalido' });
+        }
+
+        const messageResult = await pool.query(
+            `
+                SELECT
+                    m.id_message,
+                    m.id_chat,
+                    m.id_sender,
+                    c.id_user1,
+                    c.id_user2
+                FROM message m
+                JOIN chat c ON c.id_chat = m.id_chat
+                WHERE m.id_message = $1
+                LIMIT 1
+            `,
+            [messageId]
+        );
+
+        const currentMessage = messageResult.rows[0];
+        if (!currentMessage) {
+            return res.status(404).json({ success: false, message: 'Mensaje no encontrado' });
+        }
+
+        if (Number(currentMessage.id_sender) !== userId) {
+            return res.status(403).json({ success: false, message: 'Solo puedes eliminar mensajes enviados por ti' });
+        }
+
+        const otherUserId = Number(currentMessage.id_user1) === userId
+            ? Number(currentMessage.id_user2)
+            : Number(currentMessage.id_user1);
+
+        const updatedResult = await pool.query(
+            `
+                UPDATE message
+                SET
+                    deleted_at = COALESCE(deleted_at, NOW()),
+                    deleted_by = COALESCE(deleted_by, $2),
+                    content = '',
+                    audio_url = NULL,
+                    image_url = NULL,
+                    duration_seconds = NULL,
+                    transcript = NULL
+                WHERE id_message = $1
+                RETURNING
+                    id_message,
+                    id_chat AS chat_id,
+                    id_sender AS sender_id,
+                    $3::integer AS receiver_id,
+                    content,
+                    message_type,
+                    audio_url,
+                    image_url,
+                    duration_seconds,
+                    transcript,
+                    deleted_at,
+                    deleted_by,
+                    date_sent AS created_at,
+                    NULL::timestamptz AS read_at
+            `,
+            [messageId, userId, otherUserId]
+        );
+
+        const message = updatedResult.rows[0];
+
+        emitToUser(otherUserId, 'chat:message:deleted', {
+            fromUserId: userId,
+            chatUserId: otherUserId,
+            messageId,
+            deletedAt: message.deleted_at,
+            message,
+        });
+
+        return res.status(200).json({ success: true, message });
+    } catch (error) {
+        console.error('Error en deleteMessageForEveryone:', error);
+        return res.status(500).json({ success: false, message: 'Error al eliminar mensaje' });
     }
 };
 

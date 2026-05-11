@@ -387,7 +387,14 @@ export const login = async (req: Request, res: Response) => {
         return res.status(200).json({
             success: true,
             accessToken: tokens.accessToken,
-            user: { id: user.id_user, firstName: user.first_name, email: user.email }
+            user: {
+                id: user.id_user,
+                firstName: user.first_name,
+                first_name: user.first_name,
+                email: user.email,
+                id_gender: user.id_gender,
+                is_face_verified: Boolean(user.is_face_verified),
+            }
         });
     } catch (error) {
         console.error("Error en login:", error);
